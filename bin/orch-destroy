@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# orch-destroy — Shut down a worker session
+set -euo pipefail
+source "$(dirname "$0")/orch-lib.sh"
+
+name="$(orch_resolve_name "${1:-}")"
+orch_validate_name "$name"
+
+if ! orch_session_exists "$name"; then
+    orch_die "session $(orch_session_name "$name") does not exist"
+fi
+
+session="$(orch_session_name "$name")"
+
+# Save final output
+task_dir="$(orch_task_dir)"
+timestamp="$(date +%Y%m%d-%H%M%S)"
+orch_tmux capture-pane -t "$session" -p -S -200 -J > "$task_dir/${name}-final-${timestamp}.log" 2>/dev/null || true
+
+# Graceful exit
+orch_tmux send-keys -l -t "$session" -- "/exit"
+sleep 0.3
+orch_tmux send-keys -t "$session" Enter
+
+# Wait up to 5 seconds for claude to exit
+for i in $(seq 1 10); do
+    if ! orch_claude_running "$name" 2>/dev/null; then
+        break
+    fi
+    sleep 0.5
+done
+
+orch_tmux kill-session -t "$session" 2>/dev/null || true
+
+# Log worker destruction
+state_dir="$(orch_state_dir)"
+echo "{\"name\":\"$name\",\"session\":\"$session\",\"destroyed\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"status\":\"destroyed\"}" >> "$state_dir/workers.jsonl"
+
+echo "destroyed $session"

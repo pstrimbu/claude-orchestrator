@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# orch — Create or attach to the project's orchestrator session
+set -euo pipefail
+source "$(dirname "$0")/orch-lib.sh"
+
+# The orchestrator always uses a fixed name, separate from workers
+ORCH_NAME="orchestrator"
+session="$(orch_session_name "$ORCH_NAME")"
+
+if orch_session_exists "$ORCH_NAME"; then
+    echo "attaching to $session"
+    orch_tmux attach -t "$session"
+else
+    workdir="$(pwd -P)"
+
+    mkdir -p "$(dirname "$ORCH_TMUX_SOCK")"
+    orch_tmux new-session -d -s "$session" -c "$workdir"
+    orch_tmux send-keys -t "$session" "claude --dangerously-skip-permissions" Enter
+
+    # Wait for claude to start
+    echo "starting claude in $session..."
+    sleep 5
+
+    # Prime the orchestrator with its role
+    init_prompt="$ORCH_HOME/init-prompt.md"
+    goals_file="$workdir/GOALS.md"
+    if [[ -f "$init_prompt" ]]; then
+        msg="Read the file at $init_prompt and follow its instructions. Your session name is $session — never destroy it."
+        if [[ -f "$goals_file" ]]; then
+            msg="$msg Then read the project goals at $goals_file and begin working on them."
+        fi
+        orch_tmux send-keys -l -t "$session" -- "$msg"
+        sleep 0.3
+        orch_tmux send-keys -t "$session" Enter
+        sleep 3
+    fi
+
+    # Log
+    state_dir="$(orch_state_dir)"
+    echo "{\"name\":\"$ORCH_NAME\",\"session\":\"$session\",\"workdir\":\"$workdir\",\"created\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"status\":\"active\",\"role\":\"orchestrator\"}" >> "$state_dir/workers.jsonl"
+
+    echo "created $session — attaching"
+    orch_tmux attach -t "$session"
+fi
