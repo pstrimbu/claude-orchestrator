@@ -4,6 +4,8 @@ set -euo pipefail
 source "$(dirname "$0")/orch-lib.sh"
 
 if orch_session_exists; then
+    orch_tmux set-option -t "$ORCH_SESSION" set-titles on 2>/dev/null || true
+    orch_tmux set-option -t "$ORCH_SESSION" set-titles-string "$ORCH_PROJECT_ID" 2>/dev/null || true
     echo "attaching to $ORCH_SESSION"
     orch_tmux attach -t "$ORCH_SESSION"
 else
