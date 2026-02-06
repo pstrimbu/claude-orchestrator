@@ -8,13 +8,13 @@ orch_validate_name "$name"
 
 lines="${2:-50}"
 
-if ! orch_session_exists "$name"; then
-    orch_die "session $(orch_session_name "$name") does not exist"
+if ! orch_worker_exists "$name"; then
+    orch_die "worker '$name' does not exist"
 fi
 
 if [[ "$lines" -gt 500 ]]; then
     lines=500
 fi
 
-session="$(orch_session_name "$name")"
-orch_tmux capture-pane -t "$session" -p -S "-${lines}" -J
+pane_id="$(orch_worker_pane "$name")"
+orch_tmux capture-pane -t "$pane_id" -p -S "-${lines}" -J

@@ -3,18 +3,18 @@
 set -euo pipefail
 source "$(dirname "$0")/orch-lib.sh"
 
-sessions="$(orch_tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^${SESSION_PREFIX}" || true)"
+pane_dir="$(orch_pane_dir)"
 
-if [[ -z "$sessions" ]]; then
-    exit 0
-fi
-
-while IFS= read -r session; do
-    name="${session#"$SESSION_PREFIX"}"
-    session_ok="yes"
+for pane_file in "$pane_dir"/*; do
+    [[ -f "$pane_file" ]] || continue
+    name="$(basename "$pane_file")"
+    pane_ok="no"
     claude_ok="no"
-    if orch_claude_running "$name"; then
-        claude_ok="yes"
+    if orch_worker_exists "$name"; then
+        pane_ok="yes"
+        if orch_claude_running "$name"; then
+            claude_ok="yes"
+        fi
     fi
-    echo "$session  session=$session_ok claude=$claude_ok"
-done <<< "$sessions"
+    echo "$name  pane=$pane_ok claude=$claude_ok"
+done

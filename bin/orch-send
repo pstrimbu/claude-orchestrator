@@ -12,8 +12,8 @@ if [[ -z "$message" ]]; then
     orch_die "message is required"
 fi
 
-if ! orch_session_exists "$name"; then
-    orch_die "session $(orch_session_name "$name") does not exist"
+if ! orch_worker_exists "$name"; then
+    orch_die "worker '$name' does not exist"
 fi
 
 if [[ "$message" == *$'\n'* ]]; then
@@ -24,9 +24,9 @@ if [[ ${#message} -gt 1000 ]]; then
     echo "warning: message is ${#message} chars — consider orch-send-task for long messages" >&2
 fi
 
-session="$(orch_session_name "$name")"
-orch_tmux send-keys -l -t "$session" -- "$message"
+pane_id="$(orch_worker_pane "$name")"
+orch_tmux send-keys -l -t "$pane_id" -- "$message"
 sleep 0.3
-orch_tmux send-keys -t "$session" Enter
+orch_tmux send-keys -t "$pane_id" Enter
 
-echo "sent to $session"
+echo "sent to worker '$name'"
