@@ -12,6 +12,8 @@ else
     mkdir -p "$(dirname "$ORCH_TMUX_SOCK")"
     orch_tmux new-session -d -s "$ORCH_SESSION" -c "$workdir"
     orch_tmux rename-window -t "$ORCH_SESSION" "$ORCH_PROJECT_ID"
+    orch_tmux set-option -t "$ORCH_SESSION" set-titles on
+    orch_tmux set-option -t "$ORCH_SESSION" set-titles-string "$ORCH_PROJECT_ID"
     orch_tmux set-option -t "$ORCH_SESSION" main-pane-width 50% 2>/dev/null || true
     orch_tmux send-keys -t "$ORCH_SESSION" "claude --dangerously-skip-permissions" Enter
 
