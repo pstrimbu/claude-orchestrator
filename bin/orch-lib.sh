@@ -97,11 +97,14 @@ orch_state_dir() {
     echo "$dir"
 }
 
-orch_linear_state_dir() {
+orch_tracker_state_dir() {
     local dir="${ORCH_STATE_DIR:-.orch}/state"
     mkdir -p "$dir"
     echo "$dir"
 }
+
+# Backward compat alias
+orch_linear_state_dir() { orch_tracker_state_dir; }
 
 # --- Project config (.orch/project.json) ---
 
@@ -134,8 +137,102 @@ except (KeyError, TypeError, FileNotFoundError, json.JSONDecodeError):
 " 2>/dev/null
 }
 
+# --- Tracker abstraction ---
+# Supports new tracker.* config and backward-compat with linear.* config.
+# tracker.type = "linear" | "jira" | "none" (default: inferred from config)
+
+orch_tracker_type() {
+    local explicit
+    explicit="$(orch_project_config_get 'tracker.type')"
+    if [[ -n "$explicit" ]]; then
+        echo "$explicit"
+        return
+    fi
+    # Backward compat: infer from legacy linear.* config
+    if [[ "$(orch_project_config_get 'linear.enabled')" == "true" ]]; then
+        echo "linear"
+        return
+    fi
+    echo "none"
+}
+
+orch_tracker_enabled() {
+    local tracker_type
+    tracker_type="$(orch_tracker_type)"
+    [[ "$tracker_type" != "none" ]]
+}
+
+orch_tracker_team_key() {
+    local tracker_type
+    tracker_type="$(orch_tracker_type)"
+    case "$tracker_type" in
+        linear) orch_project_config_get "linear.team_key" ;;
+        jira)   orch_project_config_get "jira.project_key" ;;
+        *)      echo "" ;;
+    esac
+}
+
+orch_tracker_title_prefix() {
+    # tracker.title_prefix overrides tracker-specific prefix
+    local override
+    override="$(orch_project_config_get 'tracker.title_prefix')"
+    if [[ -n "$override" ]]; then
+        echo "$override"
+        return
+    fi
+    local tracker_type prefix
+    tracker_type="$(orch_tracker_type)"
+    case "$tracker_type" in
+        linear) prefix="$(orch_project_config_get 'linear.title_prefix')" ;;
+        jira)   prefix="$(orch_project_config_get 'jira.title_prefix')" ;;
+        *)      prefix="" ;;
+    esac
+    echo "${prefix:-[AI]}"
+}
+
+# Returns merged labels: tracker.labels (agnostic) + tracker-specific labels.
+# Output: newline-separated label names.
+orch_tracker_labels() {
+    local tracker_type
+    tracker_type="$(orch_tracker_type)"
+    # Agnostic labels from tracker.labels (python handles both array and object)
+    local agnostic_labels
+    agnostic_labels="$(python3 -c "
+import json, sys
+try:
+    with open('$(orch_project_config_path)') as f:
+        d = json.load(f)
+    labels = d.get('tracker', {}).get('labels', [])
+    if isinstance(labels, dict):
+        labels = list(labels.values())
+    for l in labels:
+        print(l)
+except:
+    pass
+" 2>/dev/null)" || true
+    # Tracker-specific labels
+    local specific_labels
+    specific_labels="$(python3 -c "
+import json, sys
+try:
+    with open('$(orch_project_config_path)') as f:
+        d = json.load(f)
+    key = '$tracker_type'
+    labels = d.get(key, {}).get('labels', [])
+    if isinstance(labels, dict):
+        labels = list(labels.values())
+    for l in labels:
+        print(l)
+except:
+    pass
+" 2>/dev/null)" || true
+    # Merge, dedupe
+    echo -e "${agnostic_labels}\n${specific_labels}" | sort -u | grep -v '^$' || true
+}
+
+# Legacy aliases for backward compat
 orch_linear_enabled() {
-    [[ "$(orch_project_config_get 'linear.enabled')" == "true" ]]
+    [[ "$(orch_tracker_type)" == "linear" ]]
 }
 
 orch_linear_team_key() {
@@ -146,6 +243,10 @@ orch_linear_title_prefix() {
     local prefix
     prefix="$(orch_project_config_get 'linear.title_prefix')"
     echo "${prefix:-[AI]}"
+}
+
+orch_jira_enabled() {
+    [[ "$(orch_tracker_type)" == "jira" ]]
 }
 
 # --- Boot message builder ---
@@ -169,13 +270,28 @@ orch_build_boot_msg() {
         msg="$msg Read the project config at $workdir/$config_path and obey it."
     fi
 
-    if orch_linear_enabled; then
-        local skill_path="$ORCH_HOME/.claude/skills/linear.md"
-        if [[ -f "$skill_path" ]]; then
-            msg="$msg Read $skill_path and follow its Linear workflow rules."
+    local tracker_type
+    tracker_type="$(orch_tracker_type)"
+    if [[ "$tracker_type" != "none" ]]; then
+        # Load tracker-agnostic skill
+        local tracker_skill="$ORCH_HOME/.claude/skills/tracker.md"
+        if [[ -f "$tracker_skill" ]]; then
+            msg="$msg Read $tracker_skill and follow its tracker workflow rules."
+        fi
+        # Load tracker-specific skill
+        local specific_skill="$ORCH_HOME/.claude/skills/tracker-${tracker_type}.md"
+        if [[ -f "$specific_skill" ]]; then
+            msg="$msg Read $specific_skill for ${tracker_type}-specific rules."
+        fi
+        # Legacy: also load linear.md if it exists and tracker is linear
+        if [[ "$tracker_type" == "linear" ]]; then
+            local linear_skill="$ORCH_HOME/.claude/skills/linear.md"
+            if [[ -f "$linear_skill" ]]; then
+                msg="$msg Read $linear_skill and follow its Linear workflow rules."
+            fi
         fi
     elif orch_project_config_exists; then
-        msg="$msg Linear is disabled for this project. Do not create or update Linear issues."
+        msg="$msg Issue tracking is disabled for this project. Do not create or update tracker issues."
     fi
 
     if [[ "$role" == "orchestrator" ]]; then

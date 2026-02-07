@@ -1,2 +1,3 @@
 .orch/
+.env
 .DS_Store

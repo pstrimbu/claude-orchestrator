@@ -1,0 +1,9 @@
+{
+  "project_id": "my-project",
+  "linear": {
+    "enabled": true,
+    "team_key": "ENG",
+    "project_name": "MY-PROJECT",
+    "title_prefix": "[AI]"
+  }
+}

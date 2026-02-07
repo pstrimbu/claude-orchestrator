@@ -10,7 +10,7 @@ Usage:
     orch-linear issue show --id ID|--key KEY
     orch-linear viewer
 
-Auth: LINEAR_API_KEY environment variable (required).
+Auth: LINEAR_API_KEY env var (configurable via linear.auth.api_key_env).
 Config: Reads .orch/project.json for defaults (team_key, labels, statuses, title_prefix).
 """
 
@@ -29,13 +29,6 @@ GRAPHQL_URL = "https://api.linear.app/graphql"
 def die(msg):
     print(f"error: {msg}", file=sys.stderr)
     sys.exit(1)
-
-
-def get_api_key():
-    key = os.environ.get("LINEAR_API_KEY", "")
-    if not key:
-        die("LINEAR_API_KEY environment variable is not set")
-    return key
 
 
 def load_project_config():
@@ -60,16 +53,77 @@ def config_get(config, dotted_key, default=""):
     return d
 
 
+def get_api_key(config):
+    """Read Linear API key from env var (name configurable via config)."""
+    env_name = config_get(config, "linear.auth.api_key_env", "") or "LINEAR_API_KEY"
+    key = os.environ.get(env_name, "")
+    if not key:
+        die(f"{env_name} environment variable is not set")
+    return key
+
+
 def check_linear_enabled(config, force=False):
+    """Accept tracker.type=linear OR legacy linear.enabled=true."""
     if force:
         return
+    # New-style: tracker.type
+    tracker_type = config_get(config, "tracker.type", "")
+    if tracker_type == "linear":
+        return
+    # Legacy: linear.enabled
     enabled = config_get(config, "linear.enabled", False)
-    if enabled is not True and str(enabled).lower() != "true":
-        die("Linear is disabled for this project (.orch/project.json linear.enabled != true). Use --force to override.")
+    if enabled is True or str(enabled).lower() == "true":
+        return
+    die("Linear is not configured for this project. "
+        "Set tracker.type='linear' or linear.enabled=true in .orch/project.json. "
+        "Use --force to override.")
 
 
-def graphql(query, variables=None):
-    api_key = get_api_key()
+def resolve_title_prefix(config):
+    """tracker.title_prefix overrides linear.title_prefix."""
+    override = config_get(config, "tracker.title_prefix", "")
+    if override:
+        return override
+    return config_get(config, "linear.title_prefix", "[AI]")
+
+
+def resolve_labels(config, extra_csv=""):
+    """Merge tracker.labels (agnostic) + linear.labels (specific) + CLI labels."""
+    names = []
+    # Agnostic labels
+    agnostic = config_get(config, "tracker.labels", [])
+    if isinstance(agnostic, dict):
+        names.extend(agnostic.values())
+    elif isinstance(agnostic, list):
+        names.extend(agnostic)
+    # Linear-specific labels
+    specific = config_get(config, "linear.labels", {})
+    if isinstance(specific, dict):
+        names.extend(specific.values())
+    elif isinstance(specific, list):
+        names.extend(specific)
+    # CLI --labels
+    if extra_csv:
+        names.extend(extra_csv.split(","))
+    # Dedupe, preserve order
+    seen = set()
+    result = []
+    for n in names:
+        n = n.strip()
+        if n and n.lower() not in seen:
+            seen.add(n.lower())
+            result.append(n)
+    return result
+
+
+_cached_api_key = None
+
+
+def graphql(query, variables=None, config=None):
+    global _cached_api_key
+    if _cached_api_key is None:
+        _cached_api_key = get_api_key(config or {})
+    api_key = _cached_api_key
     payload = json.dumps({"query": query, "variables": variables or {}}).encode()
     req = urllib.request.Request(
         GRAPHQL_URL,
@@ -93,18 +147,29 @@ def graphql(query, variables=None):
     return data.get("data", {})
 
 
-def log_linear_event(event):
+def _log_event(filename, event):
     state_dir = Path(os.environ.get("ORCH_STATE_DIR", ".orch")) / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    log_path = state_dir / "linear.jsonl"
     event["timestamp"] = datetime.now(timezone.utc).isoformat()
-    with open(log_path, "a") as f:
+    with open(state_dir / filename, "a") as f:
         f.write(json.dumps(event) + "\n")
+
+
+def log_linear_event(event):
+    _log_event("linear.jsonl", dict(event))
+    # Also write to tracker-agnostic index
+    _log_event("tracker.jsonl", {
+        "tracker_type": "linear",
+        "action": event.get("type", ""),
+        "issue_key": event.get("issue_key", ""),
+        "title": event.get("title", ""),
+        "run_id": event.get("run_id", ""),
+    })
 
 
 # --- Project management ---
 
-def find_or_create_project(team_id, project_name):
+def find_or_create_project(team_id, project_name, config=None):
     """Find a Linear project by name, or create it if it doesn't exist."""
     data = graphql("""
         query($teamId: ID!) {
@@ -112,7 +177,7 @@ def find_or_create_project(team_id, project_name):
                 nodes { id name }
             }
         }
-    """, {"teamId": team_id})
+    """, {"teamId": team_id}, config)
     nodes = data.get("projects", {}).get("nodes", [])
     for n in nodes:
         if n["name"].lower() == project_name.lower():
@@ -125,7 +190,7 @@ def find_or_create_project(team_id, project_name):
                 project { id name }
             }
         }
-    """, {"input": {"name": project_name, "teamIds": [team_id]}})
+    """, {"input": {"name": project_name, "teamIds": [team_id]}}, config)
     result = data.get("projectCreate", {})
     if not result.get("success"):
         die(f"Failed to create project '{project_name}'")
@@ -142,35 +207,35 @@ def ensure_project(config):
     project_name = config_get(config, "linear.project_name", "")
     if not project_name:
         return None  # no project_name configured, skip
-    team_id = find_team_id(team_key)
-    project_id, created = find_or_create_project(team_id, project_name)
+    team_id = find_team_id(team_key, config)
+    project_id, created = find_or_create_project(team_id, project_name, config)
     return project_id
 
 
 # --- Team/state lookups ---
 
-def find_team_id(team_key):
+def find_team_id(team_key, config=None):
     data = graphql("""
         query($key: String!) {
             teams(filter: { key: { eq: $key } }) {
                 nodes { id name key }
             }
         }
-    """, {"key": team_key})
+    """, {"key": team_key}, config)
     nodes = data.get("teams", {}).get("nodes", [])
     if not nodes:
         die(f"Team '{team_key}' not found")
     return nodes[0]["id"]
 
 
-def find_state_id(team_id, state_name):
+def find_state_id(team_id, state_name, config=None):
     data = graphql("""
         query($teamId: String!) {
             workflowStates(filter: { team: { id: { eq: $teamId } } }) {
                 nodes { id name type }
             }
         }
-    """, {"teamId": team_id})
+    """, {"teamId": team_id}, config)
     nodes = data.get("workflowStates", {}).get("nodes", [])
     for n in nodes:
         if n["name"].lower() == state_name.lower():
@@ -179,14 +244,14 @@ def find_state_id(team_id, state_name):
     die(f"State '{state_name}' not found. Available: {', '.join(names)}")
 
 
-def find_label_ids(team_id, label_names):
+def find_label_ids(team_id, label_names, config=None):
     data = graphql("""
         query($teamId: ID) {
             issueLabels(filter: { team: { id: { eq: $teamId } } }) {
                 nodes { id name }
             }
         }
-    """, {"teamId": team_id})
+    """, {"teamId": team_id}, config)
     nodes = data.get("issueLabels", {}).get("nodes", [])
     name_map = {n["name"].lower(): n["id"] for n in nodes}
     ids = []
@@ -199,7 +264,7 @@ def find_label_ids(team_id, label_names):
     return ids
 
 
-def find_issue_by_key(key):
+def find_issue_by_key(key, config=None):
     """Look up issue by key like ENG-123."""
     data = graphql("""
         query($key: String!) {
@@ -207,18 +272,18 @@ def find_issue_by_key(key):
                 nodes { id identifier title state { name } labels { nodes { name } } }
             }
         }
-    """, {"key": key})
+    """, {"key": key}, config)
     nodes = data.get("issueSearch", {}).get("nodes", [])
     if not nodes:
         die(f"Issue '{key}' not found")
     return nodes[0]
 
 
-def resolve_issue_id(args):
+def resolve_issue_id(args, config=None):
     if hasattr(args, "id") and args.id:
         return args.id
     if hasattr(args, "key") and args.key:
-        issue = find_issue_by_key(args.key)
+        issue = find_issue_by_key(args.key, config)
         return issue["id"]
     die("--id or --key is required")
 
@@ -226,7 +291,7 @@ def resolve_issue_id(args):
 # --- Commands ---
 
 def cmd_viewer(args, config):
-    data = graphql("{ viewer { id name email } }")
+    data = graphql("{ viewer { id name email } }", config=config)
     print(json.dumps(data.get("viewer", {}), indent=2))
 
 
@@ -242,9 +307,9 @@ def cmd_parent_create(args, config):
     team_key = config_get(config, "linear.team_key", "")
     if not team_key:
         die("linear.team_key not set in .orch/project.json")
-    title_prefix = config_get(config, "linear.title_prefix", "[AI]")
+    title_prefix = resolve_title_prefix(config)
 
-    team_id = find_team_id(team_key)
+    team_id = find_team_id(team_key, config)
 
     # Auto-ensure project exists
     project_id = ensure_project(config)
@@ -268,17 +333,12 @@ def cmd_parent_create(args, config):
         variables["input"]["projectId"] = project_id
 
     if args.status:
-        state_id = find_state_id(team_id, args.status)
+        state_id = find_state_id(team_id, args.status, config)
         variables["input"]["stateId"] = state_id
 
-    label_names = []
-    default_labels = config_get(config, "linear.labels", {})
-    if isinstance(default_labels, dict):
-        label_names.extend(default_labels.values())
-    if args.labels:
-        label_names.extend(args.labels.split(","))
+    label_names = resolve_labels(config, args.labels or "")
     if label_names:
-        label_ids = find_label_ids(team_id, label_names)
+        label_ids = find_label_ids(team_id, label_names, config)
         if label_ids:
             variables["input"]["labelIds"] = label_ids
 
@@ -289,7 +349,7 @@ def cmd_parent_create(args, config):
                 issue { id identifier title url }
             }
         }
-    """, variables)
+    """, variables, config)
 
     result = data.get("issueCreate", {})
     if not result.get("success"):
@@ -311,9 +371,9 @@ def cmd_subtask_create(args, config):
     team_key = config_get(config, "linear.team_key", "")
     if not team_key:
         die("linear.team_key not set in .orch/project.json")
-    title_prefix = config_get(config, "linear.title_prefix", "[AI]")
+    title_prefix = resolve_title_prefix(config)
 
-    team_id = find_team_id(team_key)
+    team_id = find_team_id(team_key, config)
 
     # Auto-ensure project exists
     project_id = ensure_project(config)
@@ -338,17 +398,12 @@ def cmd_subtask_create(args, config):
         variables["input"]["projectId"] = project_id
 
     if args.status:
-        state_id = find_state_id(team_id, args.status)
+        state_id = find_state_id(team_id, args.status, config)
         variables["input"]["stateId"] = state_id
 
-    label_names = []
-    default_labels = config_get(config, "linear.labels", {})
-    if isinstance(default_labels, dict):
-        label_names.extend(default_labels.values())
-    if args.labels:
-        label_names.extend(args.labels.split(","))
+    label_names = resolve_labels(config, args.labels or "")
     if label_names:
-        label_ids = find_label_ids(team_id, label_names)
+        label_ids = find_label_ids(team_id, label_names, config)
         if label_ids:
             variables["input"]["labelIds"] = label_ids
 
@@ -359,7 +414,7 @@ def cmd_subtask_create(args, config):
                 issue { id identifier title url parent { identifier } }
             }
         }
-    """, variables)
+    """, variables, config)
 
     result = data.get("issueCreate", {})
     if not result.get("success"):
@@ -379,12 +434,12 @@ def cmd_subtask_create(args, config):
 
 
 def cmd_issue_status(args, config):
-    issue_id = resolve_issue_id(args)
+    issue_id = resolve_issue_id(args, config)
     team_key = config_get(config, "linear.team_key", "")
     if not team_key:
         die("linear.team_key not set in .orch/project.json")
-    team_id = find_team_id(team_key)
-    state_id = find_state_id(team_id, args.set)
+    team_id = find_team_id(team_key, config)
+    state_id = find_state_id(team_id, args.set, config)
 
     data = graphql("""
         mutation($id: String!, $input: IssueUpdateInput!) {
@@ -393,7 +448,7 @@ def cmd_issue_status(args, config):
                 issue { id identifier title state { name } }
             }
         }
-    """, {"id": issue_id, "input": {"stateId": state_id}})
+    """, {"id": issue_id, "input": {"stateId": state_id}}, config)
 
     result = data.get("issueUpdate", {})
     if not result.get("success"):
@@ -402,12 +457,12 @@ def cmd_issue_status(args, config):
 
 
 def cmd_issue_label(args, config):
-    issue_id = resolve_issue_id(args)
+    issue_id = resolve_issue_id(args, config)
     team_key = config_get(config, "linear.team_key", "")
-    team_id = find_team_id(team_key) if team_key else None
+    team_id = find_team_id(team_key, config) if team_key else None
 
     label_names = args.add.split(",")
-    label_ids = find_label_ids(team_id, label_names)
+    label_ids = find_label_ids(team_id, label_names, config)
     if not label_ids:
         die("No valid labels found")
 
@@ -416,7 +471,7 @@ def cmd_issue_label(args, config):
         query($id: String!) {
             issue(id: $id) { labels { nodes { id } } }
         }
-    """, {"id": issue_id})
+    """, {"id": issue_id}, config)
     existing = [n["id"] for n in show_data.get("issue", {}).get("labels", {}).get("nodes", [])]
     all_labels = list(set(existing + label_ids))
 
@@ -427,7 +482,7 @@ def cmd_issue_label(args, config):
                 issue { id identifier labels { nodes { name } } }
             }
         }
-    """, {"id": issue_id, "input": {"labelIds": all_labels}})
+    """, {"id": issue_id, "input": {"labelIds": all_labels}}, config)
 
     result = data.get("issueUpdate", {})
     if not result.get("success"):
@@ -436,7 +491,7 @@ def cmd_issue_label(args, config):
 
 
 def cmd_issue_comment(args, config):
-    issue_id = resolve_issue_id(args)
+    issue_id = resolve_issue_id(args, config)
     with open(args.file) as f:
         body = f.read()
 
@@ -447,7 +502,7 @@ def cmd_issue_comment(args, config):
                 comment { id body }
             }
         }
-    """, {"input": {"issueId": issue_id, "body": body}})
+    """, {"input": {"issueId": issue_id, "body": body}}, config)
 
     result = data.get("commentCreate", {})
     if not result.get("success"):
@@ -456,7 +511,7 @@ def cmd_issue_comment(args, config):
 
 
 def cmd_issue_show(args, config):
-    issue_id = resolve_issue_id(args)
+    issue_id = resolve_issue_id(args, config)
     data = graphql("""
         query($id: String!) {
             issue(id: $id) {
@@ -469,7 +524,7 @@ def cmd_issue_show(args, config):
                 createdAt updatedAt
             }
         }
-    """, {"id": issue_id})
+    """, {"id": issue_id}, config)
     print(json.dumps(data.get("issue", {}), indent=2))
 
 
@@ -536,6 +591,17 @@ def main():
         sys.exit(1)
 
     config = load_project_config()
+
+    # Initialize API key early so graphql() can use it
+    global _cached_api_key
+    if args.command != "viewer" or True:  # always init for viewer too
+        try:
+            _cached_api_key = get_api_key(config)
+        except SystemExit:
+            if args.command == "viewer":
+                raise
+            # For non-viewer, check enablement first for better error message
+            pass
 
     # Check linear enabled (except for viewer which is read-only)
     if args.command != "viewer":

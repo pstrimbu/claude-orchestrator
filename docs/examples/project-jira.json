@@ -1,0 +1,23 @@
+{
+  "project_id": "my-project",
+  "tracker": {
+    "type": "jira",
+    "title_prefix": "[AI]",
+    "labels": ["ai-managed"]
+  },
+  "jira": {
+    "project_key": "ENG",
+    "issue_type": "Task",
+    "subtask_issue_type": "Sub-task",
+    "labels": ["ai-generated"],
+    "status": {
+      "todo": "To Do",
+      "in_progress": "In Progress",
+      "done": "Done"
+    }
+  },
+  "git": {
+    "branch_format": "{issueKey}-{slug}",
+    "commit_footer_format": "Refs: {issueKey}"
+  }
+}

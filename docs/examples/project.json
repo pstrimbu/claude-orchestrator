@@ -1,7 +1,11 @@
 {
   "project_id": "my-project",
+  "tracker": {
+    "type": "linear",
+    "title_prefix": "[AI]",
+    "labels": ["ai-managed"]
+  },
   "linear": {
-    "enabled": true,
     "team_key": "ENG",
     "project_name": "MY-PROJECT",
     "workflow": {
@@ -12,10 +16,8 @@
       "abandoned": "Abandoned"
     },
     "labels": {
-      "ai_generated": "ai-generated",
-      "ai_executed": "ai-executed"
-    },
-    "title_prefix": "[AI]"
+      "ai_generated": "ai-generated"
+    }
   },
   "git": {
     "branch_format": "{issueKey}-{slug}",

@@ -1,0 +1,531 @@
+#!/usr/bin/env python3
+"""orch-jira — CLI for Jira issue management via REST API.
+
+Usage:
+    orch-jira parent create --run-id ID --title TITLE --body-file PATH [--labels a,b] [--status STATUS]
+    orch-jira subtask create --parent-key KEY --title TITLE --body-file PATH [--labels a,b] [--status STATUS]
+    orch-jira issue status --key KEY --set STATUS
+    orch-jira issue label --key KEY --add LABELS
+    orch-jira issue comment --key KEY --file PATH
+    orch-jira issue show --key KEY
+    orch-jira viewer
+
+Auth: JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN env vars (names configurable via jira.auth.*).
+Config: Reads .orch/project.json for defaults (jira.project_key, labels, statuses, title_prefix).
+"""
+
+import argparse
+import base64
+import json
+import os
+import sys
+import urllib.request
+import urllib.error
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def die(msg):
+    print(f"error: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def load_project_config():
+    config_path = Path(os.environ.get("ORCH_STATE_DIR", ".orch")) / "project.json"
+    if not config_path.exists():
+        return {}
+    try:
+        with open(config_path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def config_get(config, dotted_key, default=""):
+    keys = dotted_key.split(".")
+    d = config
+    for k in keys:
+        if isinstance(d, dict) and k in d:
+            d = d[k]
+        else:
+            return default
+    return d
+
+
+def get_auth(config):
+    """Read Jira auth from env vars (names configurable via config)."""
+    base_url_env = config_get(config, "jira.auth.base_url_env", "") or "JIRA_BASE_URL"
+    email_env = config_get(config, "jira.auth.email_env", "") or "JIRA_EMAIL"
+    token_env = config_get(config, "jira.auth.api_token_env", "") or "JIRA_API_TOKEN"
+
+    base_url = os.environ.get(base_url_env, "").rstrip("/")
+    email = os.environ.get(email_env, "")
+    token = os.environ.get(token_env, "")
+    if not base_url:
+        die(f"{base_url_env} environment variable is not set")
+    if not email:
+        die(f"{email_env} environment variable is not set")
+    if not token:
+        die(f"{token_env} environment variable is not set")
+    return base_url, email, token
+
+
+def check_jira_enabled(config, force=False):
+    """Accept tracker.type=jira OR legacy jira.enabled=true."""
+    if force:
+        return
+    tracker_type = config_get(config, "tracker.type", "")
+    if tracker_type == "jira":
+        return
+    # Legacy: jira.enabled
+    jira_enabled = config_get(config, "jira.enabled", False)
+    if jira_enabled is True or str(jira_enabled).lower() == "true":
+        return
+    die("Jira is not configured for this project. "
+        "Set tracker.type='jira' or jira.enabled=true in .orch/project.json. "
+        "Use --force to override.")
+
+
+def resolve_title_prefix(config):
+    """tracker.title_prefix overrides jira.title_prefix."""
+    override = config_get(config, "tracker.title_prefix", "")
+    if override:
+        return override
+    return config_get(config, "jira.title_prefix", "[AI]")
+
+
+def resolve_labels(config, extra_csv=""):
+    """Merge tracker.labels (agnostic) + jira.labels (specific) + CLI labels."""
+    names = []
+    # Agnostic labels
+    agnostic = config_get(config, "tracker.labels", [])
+    if isinstance(agnostic, dict):
+        names.extend(agnostic.values())
+    elif isinstance(agnostic, list):
+        names.extend(agnostic)
+    # Jira-specific labels
+    specific = config_get(config, "jira.labels", {})
+    if isinstance(specific, dict):
+        names.extend(specific.values())
+    elif isinstance(specific, list):
+        names.extend(specific)
+    # CLI --labels
+    if extra_csv:
+        names.extend(extra_csv.split(","))
+    # Dedupe, preserve order
+    seen = set()
+    result = []
+    for n in names:
+        n = n.strip()
+        if n and n.lower() not in seen:
+            seen.add(n.lower())
+            result.append(n)
+    return result
+
+
+def resolve_semantic_status(config, status_name):
+    """Map semantic status names (todo, in_progress, done) to real Jira names."""
+    semantic_map = {
+        "todo": config_get(config, "jira.status.todo", "To Do"),
+        "in_progress": config_get(config, "jira.status.in_progress", "In Progress"),
+        "done": config_get(config, "jira.status.done", "Done"),
+        "blocked": config_get(config, "jira.status.blocked", "Blocked"),
+    }
+    # Check if the caller used a semantic key
+    key = status_name.lower().replace(" ", "_").replace("-", "_")
+    return semantic_map.get(key, status_name)
+
+
+_cached_auth = None
+
+
+def jira_request(method, path, data=None, config=None):
+    global _cached_auth
+    if _cached_auth is None:
+        _cached_auth = get_auth(config or {})
+    base_url, email, token = _cached_auth
+    url = f"{base_url}/rest/api/3/{path.lstrip('/')}"
+    body = json.dumps(data).encode() if data else None
+
+    credentials = base64.b64encode(f"{email}:{token}".encode()).decode()
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method=method,
+        headers={
+            "Authorization": f"Basic {credentials}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            if resp.status == 204:
+                return {}
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode() if e.fp else ""
+        die(f"Jira API error {e.code}: {body_text}")
+    except urllib.error.URLError as e:
+        die(f"Network error: {e.reason}")
+
+
+def _log_event(filename, event):
+    state_dir = Path(os.environ.get("ORCH_STATE_DIR", ".orch")) / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    event["timestamp"] = datetime.now(timezone.utc).isoformat()
+    with open(state_dir / filename, "a") as f:
+        f.write(json.dumps(event) + "\n")
+
+
+def log_jira_event(event):
+    _log_event("jira.jsonl", dict(event))
+    # Also write to tracker-agnostic index
+    _log_event("tracker.jsonl", {
+        "tracker_type": "jira",
+        "action": event.get("type", ""),
+        "issue_key": event.get("issue_key", ""),
+        "title": event.get("title", ""),
+        "run_id": event.get("run_id", ""),
+    })
+
+
+# --- Lookups ---
+
+def find_project(project_key, config=None):
+    """Verify project exists and return its data."""
+    return jira_request("GET", f"project/{project_key}", config=config)
+
+
+def find_transition_id(issue_key, target_status, config=None):
+    """Find the transition ID to move an issue to target_status."""
+    # Resolve semantic status name first
+    resolved = resolve_semantic_status(config or {}, target_status)
+    data = jira_request("GET", f"issue/{issue_key}/transitions", config=config)
+    transitions = data.get("transitions", [])
+    for t in transitions:
+        if t["to"]["name"].lower() == resolved.lower():
+            return t["id"]
+    names = [t["to"]["name"] for t in transitions]
+    die(f"Transition to '{resolved}' not available. Available: {', '.join(names)}")
+
+
+def text_to_adf(text):
+    """Convert plain text/markdown to Atlassian Document Format (ADF)."""
+    paragraphs = text.split("\n\n") if text else [""]
+    content = []
+    for para in paragraphs:
+        if not para.strip():
+            continue
+        content.append({
+            "type": "paragraph",
+            "content": [{"type": "text", "text": para.strip()}]
+        })
+    if not content:
+        content = [{"type": "paragraph", "content": [{"type": "text", "text": " "}]}]
+    return {"version": 1, "type": "doc", "content": content}
+
+
+# --- Commands ---
+
+def cmd_viewer(args, config):
+    data = jira_request("GET", "myself", config=config)
+    print(json.dumps({
+        "displayName": data.get("displayName", ""),
+        "emailAddress": data.get("emailAddress", ""),
+        "accountId": data.get("accountId", ""),
+    }, indent=2))
+
+
+def cmd_parent_create(args, config):
+    project_key = config_get(config, "jira.project_key", "")
+    if not project_key:
+        die("jira.project_key not set in .orch/project.json")
+    title_prefix = resolve_title_prefix(config)
+    issue_type = config_get(config, "jira.issue_type", "Task")
+
+    body = ""
+    if args.body_file:
+        with open(args.body_file) as f:
+            body = f.read()
+
+    title = f"{title_prefix} {args.title}"
+
+    fields = {
+        "project": {"key": project_key},
+        "summary": title,
+        "issuetype": {"name": issue_type},
+        "description": text_to_adf(body),
+    }
+
+    # Add labels
+    label_names = resolve_labels(config, args.labels or "")
+    if label_names:
+        fields["labels"] = label_names
+
+    data = jira_request("POST", "issue", {"fields": fields}, config=config)
+    issue_key = data.get("key", "")
+    issue_id = data.get("id", "")
+
+    # Transition to status if requested
+    if args.status and issue_key:
+        try:
+            transition_id = find_transition_id(issue_key, args.status, config)
+            jira_request("POST", f"issue/{issue_key}/transitions", {
+                "transition": {"id": transition_id}
+            }, config=config)
+        except SystemExit:
+            print(f"warning: could not transition to '{args.status}'", file=sys.stderr)
+
+    log_jira_event({
+        "type": "parent_created",
+        "run_id": args.run_id,
+        "issue_id": issue_id,
+        "issue_key": issue_key,
+        "title": title,
+        "url": f"{_cached_auth[0]}/browse/{issue_key}",
+    })
+
+    result = {
+        "id": issue_id,
+        "key": issue_key,
+        "title": title,
+        "url": f"{_cached_auth[0]}/browse/{issue_key}",
+    }
+    print(json.dumps(result, indent=2))
+
+
+def cmd_subtask_create(args, config):
+    project_key = config_get(config, "jira.project_key", "")
+    if not project_key:
+        die("jira.project_key not set in .orch/project.json")
+    title_prefix = resolve_title_prefix(config)
+    # Support both subtask_issue_type (canonical) and subtask_type (legacy)
+    subtask_type = config_get(config, "jira.subtask_issue_type", "")
+    if not subtask_type:
+        subtask_type = config_get(config, "jira.subtask_type", "Sub-task")
+
+    body = ""
+    if args.body_file:
+        with open(args.body_file) as f:
+            body = f.read()
+
+    title = f"{title_prefix} {args.title}"
+
+    fields = {
+        "project": {"key": project_key},
+        "summary": title,
+        "issuetype": {"name": subtask_type},
+        "parent": {"key": args.parent_key},
+        "description": text_to_adf(body),
+    }
+
+    # Add labels
+    label_names = resolve_labels(config, args.labels or "")
+    if label_names:
+        fields["labels"] = label_names
+
+    data = jira_request("POST", "issue", {"fields": fields}, config=config)
+    issue_key = data.get("key", "")
+    issue_id = data.get("id", "")
+
+    # Transition to status if requested
+    if args.status and issue_key:
+        try:
+            transition_id = find_transition_id(issue_key, args.status, config)
+            jira_request("POST", f"issue/{issue_key}/transitions", {
+                "transition": {"id": transition_id}
+            }, config=config)
+        except SystemExit:
+            print(f"warning: could not transition to '{args.status}'", file=sys.stderr)
+
+    log_jira_event({
+        "type": "subtask_created",
+        "run_id": getattr(args, "run_id", ""),
+        "issue_id": issue_id,
+        "issue_key": issue_key,
+        "parent_key": args.parent_key,
+        "title": title,
+        "url": f"{_cached_auth[0]}/browse/{issue_key}",
+    })
+
+    result = {
+        "id": issue_id,
+        "key": issue_key,
+        "title": title,
+        "parent": args.parent_key,
+        "url": f"{_cached_auth[0]}/browse/{issue_key}",
+    }
+    print(json.dumps(result, indent=2))
+
+
+def cmd_issue_status(args, config):
+    transition_id = find_transition_id(args.key, args.set, config)
+    jira_request("POST", f"issue/{args.key}/transitions", {
+        "transition": {"id": transition_id}
+    }, config=config)
+    # Fetch updated issue to confirm
+    data = jira_request("GET", f"issue/{args.key}?fields=status,summary", config=config)
+    fields = data.get("fields", {})
+    print(json.dumps({
+        "key": args.key,
+        "summary": fields.get("summary", ""),
+        "status": fields.get("status", {}).get("name", ""),
+    }, indent=2))
+
+
+def cmd_issue_label(args, config):
+    # Get current labels
+    data = jira_request("GET", f"issue/{args.key}?fields=labels", config=config)
+    current = data.get("fields", {}).get("labels", [])
+    new_labels = [l.strip() for l in args.add.split(",")]
+    all_labels = list(set(current + new_labels))
+
+    jira_request("PUT", f"issue/{args.key}", {
+        "fields": {"labels": all_labels}
+    }, config=config)
+
+    print(json.dumps({
+        "key": args.key,
+        "labels": all_labels,
+    }, indent=2))
+
+
+def cmd_issue_comment(args, config):
+    with open(args.file) as f:
+        body = f.read()
+
+    data = jira_request("POST", f"issue/{args.key}/comment", {
+        "body": text_to_adf(body)
+    }, config=config)
+
+    print(json.dumps({
+        "id": data.get("id", ""),
+        "key": args.key,
+    }, indent=2))
+
+
+def cmd_issue_show(args, config):
+    data = jira_request("GET", f"issue/{args.key}?expand=names", config=config)
+    fields = data.get("fields", {})
+    result = {
+        "key": data.get("key", ""),
+        "id": data.get("id", ""),
+        "summary": fields.get("summary", ""),
+        "status": fields.get("status", {}).get("name", ""),
+        "issuetype": fields.get("issuetype", {}).get("name", ""),
+        "labels": fields.get("labels", []),
+        "assignee": (fields.get("assignee") or {}).get("displayName", ""),
+        "parent": (fields.get("parent") or {}).get("key", ""),
+        "created": fields.get("created", ""),
+        "updated": fields.get("updated", ""),
+        "url": f"{_cached_auth[0]}/browse/{data.get('key', '')}",
+    }
+    # Include subtasks if present
+    subtasks = fields.get("subtasks", [])
+    if subtasks:
+        result["subtasks"] = [{
+            "key": s.get("key", ""),
+            "summary": s.get("fields", {}).get("summary", ""),
+            "status": s.get("fields", {}).get("status", {}).get("name", ""),
+        } for s in subtasks]
+    print(json.dumps(result, indent=2))
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Jira issue management CLI")
+    parser.add_argument("--force", action="store_true", help="Override jira enabled check")
+    subparsers = parser.add_subparsers(dest="command")
+
+    # viewer
+    subparsers.add_parser("viewer", help="Show authenticated user")
+
+    # parent
+    parent_parser = subparsers.add_parser("parent", help="Parent issue operations")
+    parent_sub = parent_parser.add_subparsers(dest="parent_action")
+    parent_create = parent_sub.add_parser("create", help="Create parent issue")
+    parent_create.add_argument("--run-id", required=True)
+    parent_create.add_argument("--title", required=True)
+    parent_create.add_argument("--body-file", required=False)
+    parent_create.add_argument("--labels")
+    parent_create.add_argument("--status")
+
+    # subtask
+    subtask_parser = subparsers.add_parser("subtask", help="Subtask operations")
+    subtask_sub = subtask_parser.add_subparsers(dest="subtask_action")
+    subtask_create = subtask_sub.add_parser("create", help="Create subtask")
+    subtask_create.add_argument("--parent-key", required=True)
+    subtask_create.add_argument("--title", required=True)
+    subtask_create.add_argument("--body-file", required=False)
+    subtask_create.add_argument("--labels")
+    subtask_create.add_argument("--status")
+    subtask_create.add_argument("--run-id", default="")
+
+    # issue
+    issue_parser = subparsers.add_parser("issue", help="Issue operations")
+    issue_sub = issue_parser.add_subparsers(dest="issue_action")
+
+    status_p = issue_sub.add_parser("status", help="Set issue status")
+    status_p.add_argument("--key", required=True)
+    status_p.add_argument("--set", required=True)
+
+    label_p = issue_sub.add_parser("label", help="Add labels")
+    label_p.add_argument("--key", required=True)
+    label_p.add_argument("--add", required=True)
+
+    comment_p = issue_sub.add_parser("comment", help="Add comment")
+    comment_p.add_argument("--key", required=True)
+    comment_p.add_argument("--file", required=True)
+
+    show_p = issue_sub.add_parser("show", help="Show issue details")
+    show_p.add_argument("--key", required=True)
+
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    config = load_project_config()
+
+    # Initialize auth early
+    global _cached_auth
+    try:
+        _cached_auth = get_auth(config)
+    except SystemExit:
+        if args.command == "viewer":
+            raise
+        pass
+
+    # Check jira enabled (except for viewer which is read-only)
+    if args.command != "viewer":
+        check_jira_enabled(config, force=args.force)
+
+    dispatch = {
+        "viewer": cmd_viewer,
+        "parent": lambda a, c: cmd_parent_create(a, c) if a.parent_action == "create" else parent_parser.print_help(),
+        "subtask": lambda a, c: cmd_subtask_create(a, c) if a.subtask_action == "create" else subtask_parser.print_help(),
+        "issue": {
+            "status": cmd_issue_status,
+            "label": cmd_issue_label,
+            "comment": cmd_issue_comment,
+            "show": cmd_issue_show,
+        },
+    }
+
+    handler = dispatch.get(args.command)
+    if isinstance(handler, dict):
+        action = getattr(args, "issue_action", None)
+        handler = handler.get(action)
+        if not handler:
+            issue_parser.print_help()
+            sys.exit(1)
+
+    if handler:
+        handler(args, config)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

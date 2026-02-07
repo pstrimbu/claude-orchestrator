@@ -8,12 +8,36 @@
       "type": "string",
       "description": "Stable project identifier"
     },
+    "tracker": {
+      "type": "object",
+      "description": "Tracker abstraction layer",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["linear", "jira", "none"],
+          "default": "none",
+          "description": "Which issue tracker to use"
+        },
+        "title_prefix": {
+          "type": "string",
+          "description": "Agnostic title prefix — overrides tracker-specific prefix"
+        },
+        "labels": {
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            { "type": "object", "additionalProperties": { "type": "string" } }
+          ],
+          "description": "Agnostic default labels — merged with tracker-specific labels"
+        }
+      }
+    },
     "linear": {
       "type": "object",
+      "description": "Linear-specific config (tracker.type=linear or legacy linear.enabled=true)",
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Enable/disable Linear integration"
+          "description": "Legacy toggle. Prefer tracker.type instead."
         },
         "team_key": {
           "type": "string",
@@ -25,7 +49,7 @@
         },
         "project_name": {
           "type": "string",
-          "description": "Human-readable project name"
+          "description": "Human-readable project name (auto-created if missing)"
         },
         "workflow": {
           "type": "object",
@@ -44,6 +68,79 @@
         "title_prefix": {
           "type": "string",
           "default": "[AI]"
+        },
+        "auth": {
+          "type": "object",
+          "description": "Auth env var name overrides (NO secrets here)",
+          "properties": {
+            "api_key_env": {
+              "type": "string",
+              "default": "LINEAR_API_KEY",
+              "description": "Env var name holding the Linear API key"
+            }
+          }
+        }
+      }
+    },
+    "jira": {
+      "type": "object",
+      "description": "Jira-specific config (tracker.type=jira)",
+      "properties": {
+        "project_key": {
+          "type": "string",
+          "description": "Jira project key (e.g., ENG)"
+        },
+        "issue_type": {
+          "type": "string",
+          "default": "Task",
+          "description": "Issue type for parent issues"
+        },
+        "subtask_issue_type": {
+          "type": "string",
+          "default": "Sub-task",
+          "description": "Issue type for subtasks"
+        },
+        "title_prefix": {
+          "type": "string",
+          "default": "[AI]"
+        },
+        "labels": {
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            { "type": "object", "additionalProperties": { "type": "string" } }
+          ],
+          "description": "Default labels applied to all issues"
+        },
+        "status": {
+          "type": "object",
+          "description": "Semantic status name mapping",
+          "properties": {
+            "todo": { "type": "string", "default": "To Do" },
+            "in_progress": { "type": "string", "default": "In Progress" },
+            "done": { "type": "string", "default": "Done" },
+            "blocked": { "type": "string", "default": "Blocked" }
+          }
+        },
+        "auth": {
+          "type": "object",
+          "description": "Auth env var name overrides (NO secrets here)",
+          "properties": {
+            "base_url_env": {
+              "type": "string",
+              "default": "JIRA_BASE_URL",
+              "description": "Env var name holding the Jira base URL"
+            },
+            "email_env": {
+              "type": "string",
+              "default": "JIRA_EMAIL",
+              "description": "Env var name holding the Jira email"
+            },
+            "api_token_env": {
+              "type": "string",
+              "default": "JIRA_API_TOKEN",
+              "description": "Env var name holding the Jira API token"
+            }
+          }
         }
       }
     },

@@ -1,0 +1,20 @@
+{
+  "project_id": "my-project",
+  "tracker": { "type": "jira" },
+  "jira": {
+    "project_key": "MYPROJ",
+    "issue_type": "Story",
+    "subtask_issue_type": "Sub-task",
+    "title_prefix": "[Bot]",
+    "status": {
+      "todo": "Open",
+      "in_progress": "In Progress",
+      "done": "Closed"
+    },
+    "auth": {
+      "base_url_env": "MYPROJ_JIRA_URL",
+      "email_env": "MYPROJ_JIRA_EMAIL",
+      "api_token_env": "MYPROJ_JIRA_TOKEN"
+    }
+  }
+}
