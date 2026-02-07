@@ -1,0 +1,24 @@
+{
+  "project_id": "my-project",
+  "linear": {
+    "enabled": true,
+    "team_key": "ENG",
+    "project_name": "MY-PROJECT",
+    "workflow": {
+      "queued": "Queued (AI)",
+      "in_progress": "In Progress",
+      "blocked": "Blocked",
+      "done": "Done",
+      "abandoned": "Abandoned"
+    },
+    "labels": {
+      "ai_generated": "ai-generated",
+      "ai_executed": "ai-executed"
+    },
+    "title_prefix": "[AI]"
+  },
+  "git": {
+    "branch_format": "{issueKey}-{slug}",
+    "commit_footer_format": "Refs: {issueKey}"
+  }
+}

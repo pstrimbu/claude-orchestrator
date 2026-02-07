@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Orchestrator Project Config",
+  "type": "object",
+  "required": ["project_id"],
+  "properties": {
+    "project_id": {
+      "type": "string",
+      "description": "Stable project identifier"
+    },
+    "linear": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable/disable Linear integration"
+        },
+        "team_key": {
+          "type": "string",
+          "description": "Linear team key (e.g., ENG)"
+        },
+        "project_id": {
+          "type": "string",
+          "description": "Linear project UUID"
+        },
+        "project_name": {
+          "type": "string",
+          "description": "Human-readable project name"
+        },
+        "workflow": {
+          "type": "object",
+          "properties": {
+            "queued": { "type": "string", "default": "Queued (AI)" },
+            "in_progress": { "type": "string", "default": "In Progress" },
+            "blocked": { "type": "string", "default": "Blocked" },
+            "done": { "type": "string", "default": "Done" },
+            "abandoned": { "type": "string", "default": "Abandoned" }
+          }
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "title_prefix": {
+          "type": "string",
+          "default": "[AI]"
+        }
+      }
+    },
+    "git": {
+      "type": "object",
+      "properties": {
+        "branch_format": { "type": "string", "default": "{issueKey}-{slug}" },
+        "commit_footer_format": { "type": "string", "default": "Refs: {issueKey}" }
+      }
+    }
+  }
+}

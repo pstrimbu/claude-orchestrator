@@ -23,19 +23,12 @@ else
     echo "starting orchestrator for $ORCH_PROJECT_ID..."
     sleep 5
 
-    # Prime the orchestrator with its role
-    init_prompt="$ORCH_HOME/init-prompt.md"
-    goals_file="$workdir/GOALS.md"
-    if [[ -f "$init_prompt" ]]; then
-        msg="Read the file at $init_prompt and follow its instructions. You are in session $ORCH_SESSION — never destroy your own session."
-        if [[ -f "$goals_file" ]]; then
-            msg="$msg Then read the project goals at $goals_file and begin working on them."
-        fi
-        orch_tmux send-keys -l -t "$ORCH_SESSION" -- "$msg"
-        sleep 0.3
-        orch_tmux send-keys -t "$ORCH_SESSION" Enter
-        sleep 3
-    fi
+    # Prime the orchestrator
+    msg="$(orch_build_boot_msg orchestrator)"
+    orch_tmux send-keys -l -t "$ORCH_SESSION" -- "$msg"
+    sleep 0.3
+    orch_tmux send-keys -t "$ORCH_SESSION" Enter
+    sleep 3
 
     # Log
     state_dir="$(orch_state_dir)"

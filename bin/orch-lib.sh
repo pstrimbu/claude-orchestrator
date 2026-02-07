@@ -96,3 +96,94 @@ orch_state_dir() {
     mkdir -p "$dir"
     echo "$dir"
 }
+
+orch_linear_state_dir() {
+    local dir="${ORCH_STATE_DIR:-.orch}/state"
+    mkdir -p "$dir"
+    echo "$dir"
+}
+
+# --- Project config (.orch/project.json) ---
+
+orch_project_config_path() {
+    echo "${ORCH_STATE_DIR:-.orch}/project.json"
+}
+
+orch_project_config_exists() {
+    [[ -f "$(orch_project_config_path)" ]]
+}
+
+# Read a dotted key from project.json using python. Returns empty string if missing.
+# Usage: orch_project_config_get "linear.enabled"
+orch_project_config_get() {
+    local key="$1"
+    local config_path
+    config_path="$(orch_project_config_path)"
+    [[ -f "$config_path" ]] || return 0
+    python3 -c "
+import json, sys
+try:
+    with open('$config_path') as f:
+        d = json.load(f)
+    keys = '$key'.split('.')
+    for k in keys:
+        d = d[k]
+    print(d if not isinstance(d, bool) else str(d).lower())
+except (KeyError, TypeError, FileNotFoundError, json.JSONDecodeError):
+    pass
+" 2>/dev/null
+}
+
+orch_linear_enabled() {
+    [[ "$(orch_project_config_get 'linear.enabled')" == "true" ]]
+}
+
+orch_linear_team_key() {
+    orch_project_config_get "linear.team_key"
+}
+
+orch_linear_title_prefix() {
+    local prefix
+    prefix="$(orch_project_config_get 'linear.title_prefix')"
+    echo "${prefix:-[AI]}"
+}
+
+# --- Boot message builder ---
+# Builds the priming message for both orchestrator and worker panes.
+# Usage: orch_build_boot_msg [--role orchestrator|worker]
+orch_build_boot_msg() {
+    local role="${1:-worker}"
+    local workdir
+    workdir="$(pwd -P)"
+    local msg="Read the file at $ORCH_HOME/init-prompt.md and follow its instructions."
+
+    if [[ "$role" == "orchestrator" ]]; then
+        msg="$msg You are in session $ORCH_SESSION — never destroy your own session."
+    else
+        msg="$msg You are a worker. Focus on the tasks assigned to you."
+    fi
+
+    local config_path
+    config_path="$(orch_project_config_path)"
+    if [[ -f "$config_path" ]]; then
+        msg="$msg Read the project config at $workdir/$config_path and obey it."
+    fi
+
+    if orch_linear_enabled; then
+        local skill_path="$ORCH_HOME/.claude/skills/linear.md"
+        if [[ -f "$skill_path" ]]; then
+            msg="$msg Read $skill_path and follow its Linear workflow rules."
+        fi
+    elif orch_project_config_exists; then
+        msg="$msg Linear is disabled for this project. Do not create or update Linear issues."
+    fi
+
+    if [[ "$role" == "orchestrator" ]]; then
+        local goals_file="$workdir/GOALS.md"
+        if [[ -f "$goals_file" ]]; then
+            msg="$msg Then read the project goals at $goals_file and begin working on them."
+        fi
+    fi
+
+    echo "$msg"
+}

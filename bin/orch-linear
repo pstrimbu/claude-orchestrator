@@ -1,0 +1,573 @@
+#!/usr/bin/env python3
+"""orch-linear — CLI for Linear issue management via GraphQL API.
+
+Usage:
+    orch-linear parent create --run-id ID --title TITLE --body-file PATH [--labels a,b] [--status STATUS]
+    orch-linear subtask create --parent-id ID --title TITLE --body-file PATH [--labels a,b] [--status STATUS]
+    orch-linear issue status --id ID|--key KEY --set STATUS
+    orch-linear issue label --id ID|--key KEY --add LABELS
+    orch-linear issue comment --id ID|--key KEY --file PATH
+    orch-linear issue show --id ID|--key KEY
+    orch-linear viewer
+
+Auth: LINEAR_API_KEY environment variable (required).
+Config: Reads .orch/project.json for defaults (team_key, labels, statuses, title_prefix).
+"""
+
+import argparse
+import json
+import os
+import sys
+import urllib.request
+import urllib.error
+from datetime import datetime, timezone
+from pathlib import Path
+
+GRAPHQL_URL = "https://api.linear.app/graphql"
+
+
+def die(msg):
+    print(f"error: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def get_api_key():
+    key = os.environ.get("LINEAR_API_KEY", "")
+    if not key:
+        die("LINEAR_API_KEY environment variable is not set")
+    return key
+
+
+def load_project_config():
+    config_path = Path(os.environ.get("ORCH_STATE_DIR", ".orch")) / "project.json"
+    if not config_path.exists():
+        return {}
+    try:
+        with open(config_path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def config_get(config, dotted_key, default=""):
+    keys = dotted_key.split(".")
+    d = config
+    for k in keys:
+        if isinstance(d, dict) and k in d:
+            d = d[k]
+        else:
+            return default
+    return d
+
+
+def check_linear_enabled(config, force=False):
+    if force:
+        return
+    enabled = config_get(config, "linear.enabled", False)
+    if enabled is not True and str(enabled).lower() != "true":
+        die("Linear is disabled for this project (.orch/project.json linear.enabled != true). Use --force to override.")
+
+
+def graphql(query, variables=None):
+    api_key = get_api_key()
+    payload = json.dumps({"query": query, "variables": variables or {}}).encode()
+    req = urllib.request.Request(
+        GRAPHQL_URL,
+        data=payload,
+        headers={
+            "Authorization": api_key,
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode() if e.fp else ""
+        die(f"Linear API error {e.code}: {body}")
+    except urllib.error.URLError as e:
+        die(f"Network error: {e.reason}")
+
+    if "errors" in data:
+        die(f"GraphQL errors: {json.dumps(data['errors'], indent=2)}")
+    return data.get("data", {})
+
+
+def log_linear_event(event):
+    state_dir = Path(os.environ.get("ORCH_STATE_DIR", ".orch")) / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    log_path = state_dir / "linear.jsonl"
+    event["timestamp"] = datetime.now(timezone.utc).isoformat()
+    with open(log_path, "a") as f:
+        f.write(json.dumps(event) + "\n")
+
+
+# --- Project management ---
+
+def find_or_create_project(team_id, project_name):
+    """Find a Linear project by name, or create it if it doesn't exist."""
+    data = graphql("""
+        query($teamId: ID!) {
+            projects(filter: { accessibleTeams: { id: { eq: $teamId } } }) {
+                nodes { id name }
+            }
+        }
+    """, {"teamId": team_id})
+    nodes = data.get("projects", {}).get("nodes", [])
+    for n in nodes:
+        if n["name"].lower() == project_name.lower():
+            return n["id"], False  # found existing
+    # Create it
+    data = graphql("""
+        mutation($input: ProjectCreateInput!) {
+            projectCreate(input: $input) {
+                success
+                project { id name }
+            }
+        }
+    """, {"input": {"name": project_name, "teamIds": [team_id]}})
+    result = data.get("projectCreate", {})
+    if not result.get("success"):
+        die(f"Failed to create project '{project_name}'")
+    proj = result["project"]
+    print(f"Created Linear project: {proj['name']} ({proj['id']})", file=sys.stderr)
+    return proj["id"], True  # created new
+
+
+def ensure_project(config):
+    """Ensure the Linear project exists. Returns project_id."""
+    team_key = config_get(config, "linear.team_key", "")
+    if not team_key:
+        die("linear.team_key not set in .orch/project.json")
+    project_name = config_get(config, "linear.project_name", "")
+    if not project_name:
+        return None  # no project_name configured, skip
+    team_id = find_team_id(team_key)
+    project_id, created = find_or_create_project(team_id, project_name)
+    return project_id
+
+
+# --- Team/state lookups ---
+
+def find_team_id(team_key):
+    data = graphql("""
+        query($key: String!) {
+            teams(filter: { key: { eq: $key } }) {
+                nodes { id name key }
+            }
+        }
+    """, {"key": team_key})
+    nodes = data.get("teams", {}).get("nodes", [])
+    if not nodes:
+        die(f"Team '{team_key}' not found")
+    return nodes[0]["id"]
+
+
+def find_state_id(team_id, state_name):
+    data = graphql("""
+        query($teamId: String!) {
+            workflowStates(filter: { team: { id: { eq: $teamId } } }) {
+                nodes { id name type }
+            }
+        }
+    """, {"teamId": team_id})
+    nodes = data.get("workflowStates", {}).get("nodes", [])
+    for n in nodes:
+        if n["name"].lower() == state_name.lower():
+            return n["id"]
+    names = [n["name"] for n in nodes]
+    die(f"State '{state_name}' not found. Available: {', '.join(names)}")
+
+
+def find_label_ids(team_id, label_names):
+    data = graphql("""
+        query($teamId: ID) {
+            issueLabels(filter: { team: { id: { eq: $teamId } } }) {
+                nodes { id name }
+            }
+        }
+    """, {"teamId": team_id})
+    nodes = data.get("issueLabels", {}).get("nodes", [])
+    name_map = {n["name"].lower(): n["id"] for n in nodes}
+    ids = []
+    for name in label_names:
+        lid = name_map.get(name.lower().strip())
+        if lid:
+            ids.append(lid)
+        else:
+            print(f"warning: label '{name}' not found, skipping", file=sys.stderr)
+    return ids
+
+
+def find_issue_by_key(key):
+    """Look up issue by key like ENG-123."""
+    data = graphql("""
+        query($key: String!) {
+            issueSearch(query: $key, first: 1) {
+                nodes { id identifier title state { name } labels { nodes { name } } }
+            }
+        }
+    """, {"key": key})
+    nodes = data.get("issueSearch", {}).get("nodes", [])
+    if not nodes:
+        die(f"Issue '{key}' not found")
+    return nodes[0]
+
+
+def resolve_issue_id(args):
+    if hasattr(args, "id") and args.id:
+        return args.id
+    if hasattr(args, "key") and args.key:
+        issue = find_issue_by_key(args.key)
+        return issue["id"]
+    die("--id or --key is required")
+
+
+# --- Commands ---
+
+def cmd_viewer(args, config):
+    data = graphql("{ viewer { id name email } }")
+    print(json.dumps(data.get("viewer", {}), indent=2))
+
+
+def cmd_project_ensure(args, config):
+    project_id = ensure_project(config)
+    if project_id:
+        print(json.dumps({"project_id": project_id, "status": "ok"}, indent=2))
+    else:
+        die("linear.project_name not set in .orch/project.json")
+
+
+def cmd_parent_create(args, config):
+    team_key = config_get(config, "linear.team_key", "")
+    if not team_key:
+        die("linear.team_key not set in .orch/project.json")
+    title_prefix = config_get(config, "linear.title_prefix", "[AI]")
+
+    team_id = find_team_id(team_key)
+
+    # Auto-ensure project exists
+    project_id = ensure_project(config)
+
+    body = ""
+    if args.body_file:
+        with open(args.body_file) as f:
+            body = f.read()
+
+    title = f"{title_prefix} {args.title}"
+
+    variables = {
+        "input": {
+            "teamId": team_id,
+            "title": title,
+            "description": body,
+        }
+    }
+
+    if project_id:
+        variables["input"]["projectId"] = project_id
+
+    if args.status:
+        state_id = find_state_id(team_id, args.status)
+        variables["input"]["stateId"] = state_id
+
+    label_names = []
+    default_labels = config_get(config, "linear.labels", {})
+    if isinstance(default_labels, dict):
+        label_names.extend(default_labels.values())
+    if args.labels:
+        label_names.extend(args.labels.split(","))
+    if label_names:
+        label_ids = find_label_ids(team_id, label_names)
+        if label_ids:
+            variables["input"]["labelIds"] = label_ids
+
+    data = graphql("""
+        mutation($input: IssueCreateInput!) {
+            issueCreate(input: $input) {
+                success
+                issue { id identifier title url }
+            }
+        }
+    """, variables)
+
+    result = data.get("issueCreate", {})
+    if not result.get("success"):
+        die("Failed to create issue")
+
+    issue = result["issue"]
+    log_linear_event({
+        "type": "parent_created",
+        "run_id": args.run_id,
+        "issue_id": issue["id"],
+        "issue_key": issue["identifier"],
+        "title": issue["title"],
+        "url": issue["url"],
+    })
+    print(json.dumps(issue, indent=2))
+
+
+def cmd_subtask_create(args, config):
+    team_key = config_get(config, "linear.team_key", "")
+    if not team_key:
+        die("linear.team_key not set in .orch/project.json")
+    title_prefix = config_get(config, "linear.title_prefix", "[AI]")
+
+    team_id = find_team_id(team_key)
+
+    # Auto-ensure project exists
+    project_id = ensure_project(config)
+
+    body = ""
+    if args.body_file:
+        with open(args.body_file) as f:
+            body = f.read()
+
+    title = f"{title_prefix} {args.title}"
+
+    variables = {
+        "input": {
+            "teamId": team_id,
+            "title": title,
+            "description": body,
+            "parentId": args.parent_id,
+        }
+    }
+
+    if project_id:
+        variables["input"]["projectId"] = project_id
+
+    if args.status:
+        state_id = find_state_id(team_id, args.status)
+        variables["input"]["stateId"] = state_id
+
+    label_names = []
+    default_labels = config_get(config, "linear.labels", {})
+    if isinstance(default_labels, dict):
+        label_names.extend(default_labels.values())
+    if args.labels:
+        label_names.extend(args.labels.split(","))
+    if label_names:
+        label_ids = find_label_ids(team_id, label_names)
+        if label_ids:
+            variables["input"]["labelIds"] = label_ids
+
+    data = graphql("""
+        mutation($input: IssueCreateInput!) {
+            issueCreate(input: $input) {
+                success
+                issue { id identifier title url parent { identifier } }
+            }
+        }
+    """, variables)
+
+    result = data.get("issueCreate", {})
+    if not result.get("success"):
+        die("Failed to create subtask")
+
+    issue = result["issue"]
+    log_linear_event({
+        "type": "subtask_created",
+        "run_id": getattr(args, "run_id", ""),
+        "issue_id": issue["id"],
+        "issue_key": issue["identifier"],
+        "parent_id": args.parent_id,
+        "title": issue["title"],
+        "url": issue["url"],
+    })
+    print(json.dumps(issue, indent=2))
+
+
+def cmd_issue_status(args, config):
+    issue_id = resolve_issue_id(args)
+    team_key = config_get(config, "linear.team_key", "")
+    if not team_key:
+        die("linear.team_key not set in .orch/project.json")
+    team_id = find_team_id(team_key)
+    state_id = find_state_id(team_id, args.set)
+
+    data = graphql("""
+        mutation($id: String!, $input: IssueUpdateInput!) {
+            issueUpdate(id: $id, input: $input) {
+                success
+                issue { id identifier title state { name } }
+            }
+        }
+    """, {"id": issue_id, "input": {"stateId": state_id}})
+
+    result = data.get("issueUpdate", {})
+    if not result.get("success"):
+        die("Failed to update status")
+    print(json.dumps(result["issue"], indent=2))
+
+
+def cmd_issue_label(args, config):
+    issue_id = resolve_issue_id(args)
+    team_key = config_get(config, "linear.team_key", "")
+    team_id = find_team_id(team_key) if team_key else None
+
+    label_names = args.add.split(",")
+    label_ids = find_label_ids(team_id, label_names)
+    if not label_ids:
+        die("No valid labels found")
+
+    # Get existing labels to merge
+    show_data = graphql("""
+        query($id: String!) {
+            issue(id: $id) { labels { nodes { id } } }
+        }
+    """, {"id": issue_id})
+    existing = [n["id"] for n in show_data.get("issue", {}).get("labels", {}).get("nodes", [])]
+    all_labels = list(set(existing + label_ids))
+
+    data = graphql("""
+        mutation($id: String!, $input: IssueUpdateInput!) {
+            issueUpdate(id: $id, input: $input) {
+                success
+                issue { id identifier labels { nodes { name } } }
+            }
+        }
+    """, {"id": issue_id, "input": {"labelIds": all_labels}})
+
+    result = data.get("issueUpdate", {})
+    if not result.get("success"):
+        die("Failed to update labels")
+    print(json.dumps(result["issue"], indent=2))
+
+
+def cmd_issue_comment(args, config):
+    issue_id = resolve_issue_id(args)
+    with open(args.file) as f:
+        body = f.read()
+
+    data = graphql("""
+        mutation($input: CommentCreateInput!) {
+            commentCreate(input: $input) {
+                success
+                comment { id body }
+            }
+        }
+    """, {"input": {"issueId": issue_id, "body": body}})
+
+    result = data.get("commentCreate", {})
+    if not result.get("success"):
+        die("Failed to create comment")
+    print(json.dumps(result["comment"], indent=2))
+
+
+def cmd_issue_show(args, config):
+    issue_id = resolve_issue_id(args)
+    data = graphql("""
+        query($id: String!) {
+            issue(id: $id) {
+                id identifier title description url
+                state { name type }
+                labels { nodes { name } }
+                parent { id identifier title }
+                children { nodes { id identifier title state { name } } }
+                assignee { name }
+                createdAt updatedAt
+            }
+        }
+    """, {"id": issue_id})
+    print(json.dumps(data.get("issue", {}), indent=2))
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Linear issue management CLI")
+    parser.add_argument("--force", action="store_true", help="Override linear.enabled check")
+    subparsers = parser.add_subparsers(dest="command")
+
+    # viewer
+    subparsers.add_parser("viewer", help="Show authenticated user")
+
+    # project
+    project_parser = subparsers.add_parser("project", help="Project operations")
+    project_sub = project_parser.add_subparsers(dest="project_action")
+    project_sub.add_parser("ensure", help="Ensure Linear project exists (create if needed)")
+
+    # parent
+    parent_parser = subparsers.add_parser("parent", help="Parent issue operations")
+    parent_sub = parent_parser.add_subparsers(dest="parent_action")
+    parent_create = parent_sub.add_parser("create", help="Create parent issue")
+    parent_create.add_argument("--run-id", required=True)
+    parent_create.add_argument("--title", required=True)
+    parent_create.add_argument("--body-file", required=False)
+    parent_create.add_argument("--labels")
+    parent_create.add_argument("--status")
+
+    # subtask
+    subtask_parser = subparsers.add_parser("subtask", help="Subtask operations")
+    subtask_sub = subtask_parser.add_subparsers(dest="subtask_action")
+    subtask_create = subtask_sub.add_parser("create", help="Create subtask")
+    subtask_create.add_argument("--parent-id", required=True)
+    subtask_create.add_argument("--title", required=True)
+    subtask_create.add_argument("--body-file", required=False)
+    subtask_create.add_argument("--labels")
+    subtask_create.add_argument("--status")
+    subtask_create.add_argument("--run-id", default="")
+
+    # issue
+    issue_parser = subparsers.add_parser("issue", help="Issue operations")
+    issue_sub = issue_parser.add_subparsers(dest="issue_action")
+
+    status_p = issue_sub.add_parser("status", help="Set issue status")
+    status_p.add_argument("--id", default="")
+    status_p.add_argument("--key", default="")
+    status_p.add_argument("--set", required=True)
+
+    label_p = issue_sub.add_parser("label", help="Add labels")
+    label_p.add_argument("--id", default="")
+    label_p.add_argument("--key", default="")
+    label_p.add_argument("--add", required=True)
+
+    comment_p = issue_sub.add_parser("comment", help="Add comment")
+    comment_p.add_argument("--id", default="")
+    comment_p.add_argument("--key", default="")
+    comment_p.add_argument("--file", required=True)
+
+    show_p = issue_sub.add_parser("show", help="Show issue details")
+    show_p.add_argument("--id", default="")
+    show_p.add_argument("--key", default="")
+
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    config = load_project_config()
+
+    # Check linear enabled (except for viewer which is read-only)
+    if args.command != "viewer":
+        check_linear_enabled(config, force=args.force)
+
+    dispatch = {
+        "viewer": cmd_viewer,
+        "project": lambda a, c: cmd_project_ensure(a, c) if getattr(a, "project_action", None) == "ensure" else project_parser.print_help(),
+        "parent": lambda a, c: cmd_parent_create(a, c) if a.parent_action == "create" else parent_parser.print_help(),
+        "subtask": lambda a, c: cmd_subtask_create(a, c) if a.subtask_action == "create" else subtask_parser.print_help(),
+        "issue": {
+            "status": cmd_issue_status,
+            "label": cmd_issue_label,
+            "comment": cmd_issue_comment,
+            "show": cmd_issue_show,
+        },
+    }
+
+    handler = dispatch.get(args.command)
+    if isinstance(handler, dict):
+        action = getattr(args, "issue_action", None)
+        handler = handler.get(action)
+        if not handler:
+            issue_parser.print_help()
+            sys.exit(1)
+
+    if handler:
+        handler(args, config)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

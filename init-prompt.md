@@ -42,4 +42,8 @@ Check `.orch/workers.jsonl` and `orch-list` to see if there are existing workers
 
 If a `GOALS.md` file exists in the project root, it contains the project's current goals. Read it and begin working on them immediately. If it doesn't exist, wait for the user to describe their goals.
 
+## Project Config & Skills
+
+Always obey `.orch/project.json` and skill files (`.claude/skills/*.md`) when present. These are provided in your boot message.
+
 Ready.
