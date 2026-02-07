@@ -51,7 +51,7 @@ Per-project in `.orch/` (gitignored):
 
 ## GOALS.md
 
-If `GOALS.md` exists in the project root, the orchestrator reads it on startup and begins working automatically.
+If `.orch/GOALS.md` exists, the orchestrator reads it on startup and begins working automatically.
 
 ## Rules
 

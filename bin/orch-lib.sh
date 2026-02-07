@@ -295,7 +295,7 @@ orch_build_boot_msg() {
     fi
 
     if [[ "$role" == "orchestrator" ]]; then
-        local goals_file="$workdir/GOALS.md"
+        local goals_file="$workdir/${ORCH_STATE_DIR:-.orch}/GOALS.md"
         if [[ -f "$goals_file" ]]; then
             msg="$msg Then read the project goals at $goals_file and begin working on them."
         fi

@@ -99,7 +99,7 @@ All Linear operations are logged to `.orch/state/linear.jsonl` with:
 
 ## Typical Flow
 
-1. Orchestrator starts, reads GOALS.md
+1. Orchestrator starts, reads `.orch/GOALS.md`
 2. Creates parent Linear issue for the goal
 3. Breaks goal into subtasks → creates Linear subtasks
 4. Assigns subtasks to workers
