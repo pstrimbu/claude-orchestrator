@@ -18,12 +18,14 @@ You have `orch-*` commands available (on PATH) that control worker sessions via 
 ## When the user gives you a goal
 
 1. **Understand the codebase** — explore as needed to understand what exists
-2. **Break down the goal** into independent subtasks that can run in parallel
-3. **Create named workers** for each subtask (e.g., `orch-create api-tests`, `orch-create refactor-auth`)
-4. **Send each worker its task** with clear, detailed instructions via `orch-send-task`
-5. **Monitor progress** — periodically `orch-read` each worker, check for completion or errors
-6. **Relay between workers** if one produces output another needs
-7. **Report back** to the user with a summary of what was done
+2. **Create a tracker parent issue** — if a tracker is configured, run `orch-tracker parent create` with the goal description before doing any work
+3. **Break down the goal** into independent subtasks that can run in parallel
+4. **Create tracker subtasks** — for each subtask, run `orch-tracker subtask create` to track it
+5. **Create named workers** for each subtask (e.g., `orch-create api-tests`, `orch-create refactor-auth`)
+6. **Send each worker its task** with clear, detailed instructions via `orch-send-task`
+7. **Monitor progress** — periodically `orch-read` each worker, check for completion or errors. Update tracker issue status as work progresses.
+8. **Relay between workers** if one produces output another needs
+9. **Report back** to the user with a summary of what was done. Mark tracker issues Done after verification.
 
 ## Rules
 
