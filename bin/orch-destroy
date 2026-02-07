@@ -12,6 +12,9 @@ if [[ -z "$pane_id" ]]; then
 fi
 
 # Save final output if pane is alive
+if ! orch_worker_exists "$name"; then
+    echo "worker '$name' pane is stale — cleaning up" >&2
+fi
 if orch_worker_exists "$name"; then
     task_dir="$(orch_task_dir)"
     timestamp="$(date +%Y%m%d-%H%M%S)"

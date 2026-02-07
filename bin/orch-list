@@ -8,13 +8,15 @@ pane_dir="$(orch_pane_dir)"
 for pane_file in "$pane_dir"/*; do
     [[ -f "$pane_file" ]] || continue
     name="$(basename "$pane_file")"
-    pane_ok="no"
-    claude_ok="no"
     if orch_worker_exists "$name"; then
-        pane_ok="yes"
+        claude_ok="no"
         if orch_claude_running "$name"; then
             claude_ok="yes"
         fi
+        echo "$name  pane=yes claude=$claude_ok"
+    else
+        # Auto-prune stale pane files
+        rm -f "$pane_file"
+        echo "$name  (stale — pruned)"
     fi
-    echo "$name  pane=$pane_ok claude=$claude_ok"
 done

@@ -3,11 +3,21 @@
 set -euo pipefail
 source "$(dirname "$0")/orch-lib.sh"
 
+# Clean up stale tmux server from old naming convention
+if ! orch_session_exists && [[ -S "$ORCH_TMUX_SOCK" ]]; then
+    if orch_tmux list-sessions >/dev/null 2>&1; then
+        echo "cleaning up stale tmux server (session name mismatch)..."
+        orch_tmux kill-server 2>/dev/null || true
+    fi
+    rm -f "$ORCH_TMUX_SOCK"
+    rm -rf "$(orch_pane_dir)"
+fi
+
 if orch_session_exists; then
     orch_tmux set-option -t "$ORCH_SESSION" set-titles on 2>/dev/null || true
     orch_tmux set-option -t "$ORCH_SESSION" set-titles-string "$ORCH_PROJECT_ID" 2>/dev/null || true
     echo "attaching to $ORCH_SESSION"
-    orch_tmux attach -t "$ORCH_SESSION"
+    TMUX= orch_tmux attach -t "$ORCH_SESSION"
 else
     workdir="$(pwd -P)"
 
@@ -16,7 +26,7 @@ else
     orch_tmux rename-window -t "$ORCH_SESSION" "$ORCH_PROJECT_ID"
     orch_tmux set-option -t "$ORCH_SESSION" set-titles on
     orch_tmux set-option -t "$ORCH_SESSION" set-titles-string "$ORCH_PROJECT_ID"
-    orch_tmux set-option -t "$ORCH_SESSION" main-pane-width 50% 2>/dev/null || true
+    orch_tmux set-window-option -t "$ORCH_SESSION" main-pane-width 50% 2>/dev/null || true
     orch_tmux send-keys -t "$ORCH_SESSION" "claude --dangerously-skip-permissions" Enter
 
     # Wait for claude to start
@@ -35,5 +45,5 @@ else
     echo "{\"session\":\"$ORCH_SESSION\",\"workdir\":\"$workdir\",\"created\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"role\":\"orchestrator\"}" >> "$state_dir/workers.jsonl"
 
     echo "created $ORCH_SESSION — attaching"
-    orch_tmux attach -t "$ORCH_SESSION"
+    TMUX= orch_tmux attach -t "$ORCH_SESSION"
 fi

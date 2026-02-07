@@ -65,7 +65,7 @@ orch_worker_pane() {
 orch_worker_exists() {
     local pane_id
     pane_id="$(orch_worker_pane "$1")" || return 1
-    [[ -n "$pane_id" ]] && orch_tmux display-message -t "$pane_id" -p '' 2>/dev/null
+    [[ -n "$pane_id" ]] && orch_tmux display-message -t "$pane_id" -p '' >/dev/null 2>&1
 }
 
 orch_claude_running() {
