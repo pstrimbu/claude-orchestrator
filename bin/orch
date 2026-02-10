@@ -1,6 +1,38 @@
 #!/usr/bin/env bash
 # orch — Create or attach to the project's orchestrator session
 set -euo pipefail
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    cat <<'HELP'
+orch — Claude Code orchestrator
+
+Usage: orch [--help]
+
+Commands (all default worker name to "main"):
+  orch                  Create or reattach to orchestrator session
+  orch-create [name]    Create a worker pane
+  orch-destroy [name] --summary "desc"  Shut down worker (summary required)
+  orch-send [name] <msg>         Send short message to worker
+  orch-send-task [name] <desc>   Send complex task via file
+  orch-read [name] [lines]       Read worker output (default 50)
+  orch-health [name]             Check worker health
+  orch-list                      List all workers with status
+  orch-clock start "desc"        Start orchestrator timer
+  orch-clock stop                Stop orchestrator timer
+  orch-pause [name|--all]        Pause worker(s)
+  orch-reload                    Reload orchestrator config
+
+tmux keybindings:
+  Ctrl-b d    Detach (session keeps running)
+  Ctrl-b h    Show this help (popup)
+  Ctrl-b p    Pause all workers
+  Ctrl-b P    Pause focused pane
+  Ctrl-b r    Reload orchestrator config (re-read init-prompt.md)
+  Mouse drag  Select and copy to clipboard
+HELP
+    exit 0
+fi
+
 source "$(dirname "$0")/orch-lib.sh"
 
 # Clean up stale tmux server from old naming convention
@@ -11,6 +43,7 @@ if ! orch_session_exists && [[ -S "$ORCH_TMUX_SOCK" ]]; then
     fi
     rm -f "$ORCH_TMUX_SOCK"
     rm -rf "$(orch_pane_dir)"
+    rm -rf "${ORCH_STATE_DIR:-.orch}/clockify"
 fi
 
 if orch_session_exists; then
@@ -37,9 +70,11 @@ else
     orch_tmux bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "pbcopy"
     orch_tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "pbcopy"
 
-    # Keybindings: Ctrl-b p = pause all workers, Ctrl-b P = pause focused pane
+    # Keybindings: Ctrl-b p = pause all, P = pause focused, r = reload config, h = help
     orch_tmux bind-key -T prefix p run-shell "$ORCH_HOME/bin/orch-pause --all"
     orch_tmux bind-key -T prefix P send-keys Escape
+    orch_tmux bind-key -T prefix r run-shell "$ORCH_HOME/bin/orch-reload"
+    orch_tmux bind-key -T prefix h display-popup -w 70 -h 30 "$ORCH_HOME/bin/orch --help"
     orch_tmux send-keys -t "$ORCH_SESSION" "claude --dangerously-skip-permissions" Enter
 
     # Wait for claude to start

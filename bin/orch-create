@@ -39,4 +39,7 @@ orch_tmux send-keys -t "$pane_id" Enter
 state_dir="$(orch_state_dir)"
 echo "{\"name\":\"$name\",\"pane\":\"$pane_id\",\"created\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"status\":\"active\"}" >> "$state_dir/workers.jsonl"
 
+# Start Clockify timer for this worker
+orch_clockify_start "$name" || true
+
 echo "created worker '$name' (pane $pane_id)"

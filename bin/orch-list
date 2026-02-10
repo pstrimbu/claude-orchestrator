@@ -5,6 +5,8 @@ source "$(dirname "$0")/orch-lib.sh"
 
 pane_dir="$(orch_pane_dir)"
 
+clockify_dir="${ORCH_STATE_DIR:-.orch}/clockify"
+
 for pane_file in "$pane_dir"/*; do
     [[ -f "$pane_file" ]] || continue
     name="$(basename "$pane_file")"
@@ -13,7 +15,11 @@ for pane_file in "$pane_dir"/*; do
         if orch_claude_running "$name"; then
             claude_ok="yes"
         fi
-        echo "$name  pane=yes claude=$claude_ok"
+        timer_ok="no"
+        if [[ -f "$clockify_dir/$name" ]]; then
+            timer_ok="yes"
+        fi
+        echo "$name  pane=yes claude=$claude_ok timer=$timer_ok"
     else
         # Auto-prune stale pane files
         rm -f "$pane_file"

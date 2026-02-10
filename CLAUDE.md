@@ -24,8 +24,10 @@ All `orch-*` commands are on PATH. Worker name defaults to `main` if omitted.
 | `orch-send-task` | `orch-send-task [name] --file <path>` | Send a task from an existing file |
 | `orch-read` | `orch-read [name] [lines]` | Read recent output (default 50, max 500) |
 | `orch-health` | `orch-health [name]` | Check if pane and claude are running |
-| `orch-list` | `orch-list` | List all workers with health status |
-| `orch-destroy` | `orch-destroy [name]` | Save output, exit claude, remove pane |
+| `orch-list` | `orch-list` | List all workers with health and timer status |
+| `orch-destroy` | `orch-destroy [name] --summary "desc"` | Save output, stop timer, exit claude, remove pane |
+| `orch-clock` | `orch-clock start/stop "desc"` | Track orchestrator active time |
+| `orch-reload` | `orch-reload` | Re-read init-prompt.md without losing context |
 
 ## Layout
 
@@ -48,6 +50,18 @@ Per-project in `.orch/` (gitignored):
 - `.orch/panes/` — maps worker names to tmux pane IDs
 - `.orch/workers.jsonl` — log of create/destroy events
 - `.orch/tasks/` — task files and final output logs
+- `.orch/clockify/` — Clockify timer state (entry IDs, project cache)
+
+## Time Tracking
+
+Clockify integration tracks time automatically:
+
+- **Workers**: timer starts on `orch-create`, stops on `orch-destroy`
+- **Orchestrator**: use `orch-clock start "description"` / `orch-clock stop` for active work periods
+- **Projects**: auto-created in Clockify from `ORCH_PROJECT_ID` (the tmux title bar name)
+- **Summaries**: `orch-destroy` requires `--summary "60-120 char description"` (use `--force` to skip)
+
+Configuration: set `CLOCKIFY_API_KEY` in `.env` (loaded via zshrc). If not set, all Clockify calls are silently skipped.
 
 ## GOALS.md
 
@@ -56,8 +70,10 @@ If `.orch/GOALS.md` exists, the orchestrator reads it on startup and begins work
 ## tmux Keybindings & UX
 
 - `Ctrl-b d` — detach from session (keeps running)
+- `Ctrl-b h` — show help popup (all commands and keybindings)
 - `Ctrl-b p` — pause all workers
 - `Ctrl-b P` — pause focused pane
+- `Ctrl-b r` — reload orchestrator config (re-read init-prompt.md)
 - **Mouse select to copy** — drag to highlight text, copies to system clipboard on release (via `pbcopy`)
 - **Click to focus** — click any pane to switch to it
 
@@ -70,3 +86,4 @@ If `.orch/GOALS.md` exists, the orchestrator reads it on startup and begins work
 - **Max 5 concurrent workers** — more risks resource exhaustion
 - **Workers can't talk to each other** — you are the relay
 - **Use descriptive worker names** — `api`, `tests`, `frontend`, not `worker1`
+- **Always provide summaries** when destroying workers (60-120 chars)

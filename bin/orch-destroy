@@ -3,8 +3,55 @@
 set -euo pipefail
 source "$(dirname "$0")/orch-lib.sh"
 
-name="$(orch_resolve_name "${1:-}")"
+# Parse arguments: orch-destroy [name] [--summary "desc"] [--force]
+name=""
+summary=""
+force=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --summary)
+            shift
+            summary="${1:-}"
+            [[ -z "$summary" ]] && orch_die "--summary requires a value"
+            shift
+            ;;
+        --force)
+            force=true
+            shift
+            ;;
+        -*)
+            orch_die "unknown option: $1"
+            ;;
+        *)
+            if [[ -z "$name" ]]; then
+                name="$1"
+            else
+                orch_die "unexpected argument: $1"
+            fi
+            shift
+            ;;
+    esac
+done
+
+name="$(orch_resolve_name "$name")"
 orch_validate_name "$name"
+
+# Require --summary or --force
+if [[ -z "$summary" ]] && [[ "$force" != true ]]; then
+    orch_die "orch-destroy requires --summary \"60-120 char description\" (or --force to skip)"
+fi
+
+# Validate summary length
+if [[ -n "$summary" ]]; then
+    len=${#summary}
+    if (( len < 60 )); then
+        orch_die "summary too short ($len chars) — minimum 60 characters"
+    fi
+    if (( len > 120 )); then
+        orch_die "summary too long ($len chars) — maximum 120 characters"
+    fi
+fi
 
 pane_id="$(orch_worker_pane "$name")"
 if [[ -z "$pane_id" ]]; then
@@ -35,6 +82,13 @@ if orch_worker_exists "$name"; then
 
     # Kill the pane
     orch_tmux kill-pane -t "$pane_id" 2>/dev/null || true
+fi
+
+# Stop Clockify timer
+if [[ -n "$summary" ]]; then
+    orch_clockify_stop "$name" "$summary" || true
+else
+    orch_clockify_stop "$name" "worker destroyed without summary" || true
 fi
 
 # Clean up pane file

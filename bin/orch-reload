@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# orch-reload — Re-send boot message to orchestrator pane (re-reads init-prompt.md)
+set -euo pipefail
+source "$(dirname "$0")/orch-lib.sh"
+
+if ! orch_session_exists; then
+    echo "no orchestrator session running" >&2
+    exit 1
+fi
+
+msg="$(orch_build_boot_msg orchestrator)"
+orch_tmux send-keys -l -t "${ORCH_SESSION}:0.0" -- "$msg"
+sleep 0.3
+orch_tmux send-keys -t "${ORCH_SESSION}:0.0" Enter
+
+echo "orchestrator reloaded"
