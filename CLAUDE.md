@@ -53,6 +53,14 @@ Per-project in `.orch/` (gitignored):
 
 If `.orch/GOALS.md` exists, the orchestrator reads it on startup and begins working automatically.
 
+## tmux Keybindings & UX
+
+- `Ctrl-b d` — detach from session (keeps running)
+- `Ctrl-b p` — pause all workers
+- `Ctrl-b P` — pause focused pane
+- **Mouse select to copy** — drag to highlight text, copies to system clipboard on release (via `pbcopy`)
+- **Click to focus** — click any pane to switch to it
+
 ## Rules
 
 - **Check health before sending** — if unhealthy, destroy and recreate

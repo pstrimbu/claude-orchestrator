@@ -22,15 +22,20 @@ else
     workdir="$(pwd -P)"
 
     mkdir -p "$(dirname "$ORCH_TMUX_SOCK")"
-    orch_tmux new-session -d -s "$ORCH_SESSION" -c "$workdir"
+    orch_tmux new-session -d -s "$ORCH_SESSION" -c "$workdir" -x 200 -y 50
     orch_tmux rename-window -t "$ORCH_SESSION" "$ORCH_PROJECT_ID"
     orch_tmux set-option -t "$ORCH_SESSION" set-titles on
     orch_tmux set-option -t "$ORCH_SESSION" set-titles-string "$ORCH_PROJECT_ID"
     orch_tmux set-option -t "$ORCH_SESSION" mouse on
+    orch_tmux set-option -t "$ORCH_SESSION" set-clipboard on
     orch_tmux set-option -t "$ORCH_SESSION" history-limit 50000
     orch_tmux set-option -t "$ORCH_SESSION" pane-border-status top
     orch_tmux set-option -t "$ORCH_SESSION" pane-border-format '#{pane_index}: #{pane_title}'
     orch_tmux set-window-option -t "$ORCH_SESSION" main-pane-width 50% 2>/dev/null || true
+
+    # Copy mode: mouse drag selects and copies to system clipboard
+    orch_tmux bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "pbcopy"
+    orch_tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "pbcopy"
 
     # Keybindings: Ctrl-b p = pause all workers, Ctrl-b P = pause focused pane
     orch_tmux bind-key -T prefix p run-shell "$ORCH_HOME/bin/orch-pause --all"
