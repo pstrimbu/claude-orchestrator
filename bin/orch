@@ -63,7 +63,6 @@ else
 
     mkdir -p "$(dirname "$ORCH_TMUX_SOCK")"
     # Use actual terminal dimensions to avoid tmux dot-fill on attach
-    local cols lines
     cols="$(tput cols 2>/dev/null || echo 200)"
     lines="$(tput lines 2>/dev/null || echo 50)"
     orch_tmux new-session -d -s "$ORCH_SESSION" -c "$workdir" -x "$cols" -y "$lines"
