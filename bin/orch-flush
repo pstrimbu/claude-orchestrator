@@ -66,21 +66,7 @@ else
     end_time="$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)"
 fi
 
-# Capture worker context for summary
-worker_context=""
-pane_dir="${ORCH_STATE_DIR:-.orch}/panes"
-if [[ -d "$pane_dir" ]]; then
-    for pane_file in "$pane_dir"/*; do
-        [[ -f "$pane_file" ]] || continue
-        wname="$(basename "$pane_file")"
-        wpane="$(cat "$pane_file")"
-        # Capture last 15 lines from each worker pane
-        woutput="$(orch_tmux capture-pane -t "$wpane" -p -S -15 2>/dev/null | tr '\n' ' ' | head -c 300)" || continue
-        worker_context="${worker_context}WORKER:${wname}|${woutput}\n"
-    done
-fi
-
-# Generate summary from tasks.log + worker context
+# Generate summary from tasks.log
 summary=""
 summary="$(python3 -c "
 import sys
@@ -93,50 +79,53 @@ try:
 except:
     pass
 
-# Read worker context
-worker_lines = '''$(printf '%s' "$worker_context")'''.strip().split('\n')
-worker_info = []
-for wl in worker_lines:
-    if wl.startswith('WORKER:'):
-        parts = wl.split('|', 1)
-        name = parts[0].replace('WORKER:', '')
-        output = parts[1].strip() if len(parts) > 1 else ''
-        if output:
-            worker_info.append((name, output))
-
-# Extract task descriptions, most recent first
-descs = []
+# Extract descriptions by event type, most recent first
+# Priority: DESTROY (human-written summaries) > TASK (goal descriptions) > SEND (direct messages)
+destroy_descs = []
+task_descs = []
+send_descs = []
 seen = set()
+
+import re
+
 for line in reversed(lines):
     parts = line.strip().split('|', 2)
-    if len(parts) >= 3:
-        desc = parts[2].strip()
-        if desc and desc not in seen:
-            seen.add(desc)
-            descs.append(desc)
+    if len(parts) < 3:
+        continue
+    event = parts[1].strip()
+    desc = parts[2].strip()
+    if not desc or desc in seen:
+        continue
+    # Skip noise entries
+    if desc.startswith('Created worker:'):
+        continue
+    if 'Read the task file at' in desc:
+        continue
+    seen.add(desc)
+    if event == 'DESTROY':
+        destroy_descs.append(desc)
+    elif event == 'TASK':
+        task_descs.append(desc)
+    elif event == 'SEND':
+        # Strip [worker_name] prefix
+        clean = re.sub(r'^\[[\w-]+\]\s*', '', desc)
+        if clean:
+            send_descs.append(clean)
 
-# Build summary: prefer task descriptions, supplement with worker names
-result_parts = []
+# Build summary: DESTROY first, then TASK goals, then SEND messages
+descs = destroy_descs + task_descs + send_descs
+
 if descs:
-    result_parts.extend(descs[:3])
-
-# Add worker activity if we have room
-if worker_info:
-    active_workers = [name for name, _ in worker_info]
-    worker_note = 'workers: ' + ', '.join(active_workers)
-    if not result_parts:
-        result_parts.append(worker_note)
-    elif len('; '.join(result_parts)) < 80:
-        result_parts.append(worker_note)
-
-if result_parts:
-    result = '; '.join(result_parts)
+    # Try to fit as many as possible within 120 chars
+    result = descs[0]
+    for d in descs[1:]:
+        candidate = result + '; ' + d
+        if len(candidate) <= 120:
+            result = candidate
+        else:
+            break
     if len(result) > 120:
         result = result[:117] + '...'
-    if len(result) < 60:
-        result = result + ' — $ORCH_PROJECT_ID'
-    if len(result) > 120:
-        result = result[:120]
     print(result)
 " 2>/dev/null)" || true
 
