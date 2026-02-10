@@ -29,4 +29,6 @@ orch_tmux send-keys -l -t "$pane_id" -- "$message"
 sleep 0.3
 orch_tmux send-keys -t "$pane_id" Enter
 
+orch_log_task "SEND" "[$name] $message"
+
 echo "sent to worker '$name'"

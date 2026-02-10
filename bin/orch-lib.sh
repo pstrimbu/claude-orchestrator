@@ -4,6 +4,13 @@
 
 ORCH_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Source .env and export credentials so child processes (timer daemon, flush) inherit them
+if [[ -f "$ORCH_HOME/.env" ]]; then
+    set -a
+    source "$ORCH_HOME/.env"
+    set +a
+fi
+
 # Project ID: derived from cwd basename, sanitized for tmux (no dots/colons).
 # Override with ORCH_PROJECT env var.
 if [[ -n "${ORCH_PROJECT:-}" ]]; then

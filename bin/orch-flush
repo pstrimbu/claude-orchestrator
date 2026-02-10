@@ -66,12 +66,26 @@ else
     end_time="$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)"
 fi
 
-# Generate summary from tasks.log
+# Capture worker context for summary
+worker_context=""
+pane_dir="${ORCH_STATE_DIR:-.orch}/panes"
+if [[ -d "$pane_dir" ]]; then
+    for pane_file in "$pane_dir"/*; do
+        [[ -f "$pane_file" ]] || continue
+        wname="$(basename "$pane_file")"
+        wpane="$(cat "$pane_file")"
+        # Capture last 15 lines from each worker pane
+        woutput="$(orch_tmux capture-pane -t "$wpane" -p -S -15 2>/dev/null | tr '\n' ' ' | head -c 300)" || continue
+        worker_context="${worker_context}WORKER:${wname}|${woutput}\n"
+    done
+fi
+
+# Generate summary from tasks.log + worker context
 summary=""
-if [[ -f "$tasks_file" ]] && [[ -s "$tasks_file" ]]; then
-    summary="$(python3 -c "
+summary="$(python3 -c "
 import sys
 
+# Read task log events
 lines = []
 try:
     with open('$tasks_file') as f:
@@ -79,7 +93,18 @@ try:
 except:
     pass
 
-# Extract descriptions, most recent first
+# Read worker context
+worker_lines = '''$(printf '%s' "$worker_context")'''.strip().split('\n')
+worker_info = []
+for wl in worker_lines:
+    if wl.startswith('WORKER:'):
+        parts = wl.split('|', 1)
+        name = parts[0].replace('WORKER:', '')
+        output = parts[1].strip() if len(parts) > 1 else ''
+        if output:
+            worker_info.append((name, output))
+
+# Extract task descriptions, most recent first
 descs = []
 seen = set()
 for line in reversed(lines):
@@ -90,8 +115,22 @@ for line in reversed(lines):
             seen.add(desc)
             descs.append(desc)
 
+# Build summary: prefer task descriptions, supplement with worker names
+result_parts = []
 if descs:
-    result = '; '.join(descs)
+    result_parts.extend(descs[:3])
+
+# Add worker activity if we have room
+if worker_info:
+    active_workers = [name for name, _ in worker_info]
+    worker_note = 'workers: ' + ', '.join(active_workers)
+    if not result_parts:
+        result_parts.append(worker_note)
+    elif len('; '.join(result_parts)) < 80:
+        result_parts.append(worker_note)
+
+if result_parts:
+    result = '; '.join(result_parts)
     if len(result) > 120:
         result = result[:117] + '...'
     if len(result) < 60:
@@ -100,7 +139,6 @@ if descs:
         result = result[:120]
     print(result)
 " 2>/dev/null)" || true
-fi
 
 if [[ -z "$summary" ]]; then
     summary="Active work on $ORCH_PROJECT_ID"
