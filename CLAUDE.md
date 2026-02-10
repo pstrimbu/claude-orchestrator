@@ -26,6 +26,7 @@ All `orch-*` commands are on PATH. Worker name defaults to `main` if omitted.
 | `orch-health` | `orch-health [name]` | Check if pane and claude are running |
 | `orch-list` | `orch-list` | List all workers with health status |
 | `orch-destroy` | `orch-destroy [name] --summary "desc"` | Save output, exit claude, remove pane |
+| `orch-log` | `orch-log "description"` | Log a goal/task for Clockify summaries |
 | `orch-timer` | `orch-timer start/stop/status` | Manage activity timer daemon |
 | `orch-flush` | `orch-flush` | Flush accumulated time to Clockify |
 | `orch-reload` | `orch-reload` | Re-read init-prompt.md without losing context |
@@ -59,7 +60,7 @@ Activity-based time tracking via a background daemon:
 
 - **Automatic**: `orch-timer` daemon polls tmux `window_activity` every 10s — any pane output counts as active work
 - **Batched entries**: accumulated time flushes to Clockify at 30-minute intervals, after 5 min of inactivity, or on session exit
-- **Auto-summaries**: generated from a task event log (worker creates, task sends, destroy summaries)
+- **Auto-summaries**: generated from task event log — prioritizes GOAL and DESTROY entries, then TASK descriptions
 - **Window title**: shows `<project> ● <accumulated time>` while timer is running
 - **Manual flush**: `Ctrl-b t` or `orch-flush` to flush immediately
 - **Projects**: auto-created in Clockify from `ORCH_PROJECT_ID`

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# orch-log — Log a task/goal description for Clockify summaries
+# Usage: orch-log "description of what you're working on"
+set -euo pipefail
+source "$(dirname "$0")/orch-lib.sh"
+
+description="$*"
+if [[ -z "$description" ]]; then
+    orch_die "description is required. Usage: orch-log \"what you're working on\""
+fi
+
+orch_log_task "GOAL" "$description"
+echo "logged: $description"

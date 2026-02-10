@@ -80,8 +80,8 @@ except:
     pass
 
 # Extract descriptions by event type, most recent first
-# Priority: DESTROY (human-written summaries) > TASK (goal descriptions) > SEND (direct messages)
-destroy_descs = []
+# Priority: GOAL/DESTROY (concise summaries) > TASK (goal descriptions) > SEND (direct messages)
+goal_descs = []
 task_descs = []
 send_descs = []
 seen = set()
@@ -102,8 +102,8 @@ for line in reversed(lines):
     if 'Read the task file at' in desc:
         continue
     seen.add(desc)
-    if event == 'DESTROY':
-        destroy_descs.append(desc)
+    if event in ('GOAL', 'DESTROY'):
+        goal_descs.append(desc)
     elif event == 'TASK':
         task_descs.append(desc)
     elif event == 'SEND':
@@ -112,8 +112,8 @@ for line in reversed(lines):
         if clean:
             send_descs.append(clean)
 
-# Build summary: DESTROY first, then TASK goals, then SEND messages
-descs = destroy_descs + task_descs + send_descs
+# Build summary: GOAL/DESTROY first, then TASK goals, then SEND messages
+descs = goal_descs + task_descs + send_descs
 
 if descs:
     # Try to fit as many as possible within 120 chars
