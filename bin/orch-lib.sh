@@ -249,9 +249,6 @@ orch_jira_enabled() {
     [[ "$(orch_tracker_type)" == "jira" ]]
 }
 
-# --- Boot message builder ---
-# Builds the priming message for both orchestrator and worker panes.
-# Usage: orch_build_boot_msg [--role orchestrator|worker]
 # --- Clockify time tracking ---
 
 CLOCKIFY_BASE_URL="https://api.clockify.me/api/v1"
@@ -332,75 +329,14 @@ except:
     echo "$project_id"
 }
 
-# Start a time entry. Usage: orch_clockify_start "name" ["description"]
-orch_clockify_start() {
-    local name="$1" description="${2:-Worker: $1}"
-    local project_id
-    project_id="$(orch_clockify_find_or_create_project)" || {
-        echo "warning: clockify start failed for '$name' — no project" >&2
-        return 0
-    }
-
-    local now
-    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    local body="{\"start\":\"$now\",\"description\":\"$description\",\"projectId\":\"$project_id\"}"
-    local ws_path="/workspaces/$CLOCKIFY_WORKSPACE_ID"
-    local response
-    response="$(orch_clockify_api POST "${ws_path}/time-entries" "$body")" || {
-        echo "warning: clockify start API call failed for '$name'" >&2
-        return 0
-    }
-
-    local entry_id
-    entry_id="$(echo "$response" | python3 -c "
-import json, sys
-try:
-    print(json.load(sys.stdin)['id'])
-except:
-    pass
-" 2>/dev/null)" || true
-
-    if [[ -n "$entry_id" ]]; then
-        local clockify_dir
-        clockify_dir="$(orch_clockify_dir)"
-        echo "$entry_id" > "$clockify_dir/$name"
-        echo "clockify: started timer for '$name' (entry $entry_id)"
-    else
-        echo "warning: clockify start returned no entry ID for '$name'" >&2
-    fi
-    return 0
-}
-
-# Stop a time entry. Usage: orch_clockify_stop "name" "summary"
-orch_clockify_stop() {
-    local name="$1" summary="${2:-}"
-    local clockify_dir
-    clockify_dir="$(orch_clockify_dir)"
-    local entry_file="$clockify_dir/$name"
-
-    if [[ ! -f "$entry_file" ]]; then
-        echo "warning: no clockify timer running for '$name'" >&2
-        return 0
-    fi
-
-    local entry_id
-    entry_id="$(cat "$entry_file")"
-    local now
-    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    local ws_path="/workspaces/$CLOCKIFY_WORKSPACE_ID"
-
-    local body="{\"end\":\"$now\"}"
-    if [[ -n "$summary" ]]; then
-        body="{\"end\":\"$now\",\"description\":\"$summary\"}"
-    fi
-
-    orch_clockify_api PUT "${ws_path}/time-entries/$entry_id" "$body" >/dev/null || {
-        echo "warning: clockify stop API call failed for '$name'" >&2
-    }
-
-    rm -f "$entry_file"
-    echo "clockify: stopped timer for '$name'"
-    return 0
+# Log a task event for summary generation during flush
+# Usage: orch_log_task "EVENT" "description"
+orch_log_task() {
+    local event="$1" description="$2"
+    local log_file
+    log_file="$(orch_clockify_dir)/tasks.log"
+    description="$(echo "$description" | tr '|' '-' | tr '\n' ' ' | head -c 200)"
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)|${event}|${description}" >> "$log_file"
 }
 
 # --- Boot message builder ---

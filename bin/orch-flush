@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# orch-flush — Flush accumulated time to a single Clockify entry
+set -euo pipefail
+source "$(dirname "$0")/orch-lib.sh"
+
+reason=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --reason) shift; reason="${1:-}"; shift ;;
+        *) shift ;;
+    esac
+done
+
+clockify_dir="$(orch_clockify_dir)"
+accumulated_file="$clockify_dir/accumulated"
+tasks_file="$clockify_dir/tasks.log"
+history_file="$clockify_dir/tasks.history.log"
+lock_dir="$clockify_dir/flush.lock"
+
+# Read accumulated seconds
+acc=0
+[[ -f "$accumulated_file" ]] && acc="$(cat "$accumulated_file")"
+
+if (( acc < 60 )); then
+    [[ -n "$reason" ]] && echo "flush: skipping (${acc}s < 60s minimum) [reason=$reason]" >&2
+    # Reset anyway to prevent slow accumulation of sub-minute noise
+    echo "0" > "$accumulated_file"
+    exit 0
+fi
+
+# Acquire lock (mkdir is atomic)
+_cleanup_lock() {
+    rm -rf "$lock_dir" 2>/dev/null || true
+}
+
+if ! mkdir "$lock_dir" 2>/dev/null; then
+    # Check for stale lock (older than 30s)
+    if [[ -d "$lock_dir" ]]; then
+        lock_age=0
+        if [[ "$(uname)" == "Darwin" ]]; then
+            lock_age=$(( $(date +%s) - $(stat -f %m "$lock_dir") ))
+        else
+            lock_age=$(( $(date +%s) - $(stat -c %Y "$lock_dir") ))
+        fi
+        if (( lock_age > 30 )); then
+            rm -rf "$lock_dir"
+            mkdir "$lock_dir" 2>/dev/null || { echo "flush: lock contention" >&2; exit 1; }
+        else
+            echo "flush: already in progress" >&2
+            exit 1
+        fi
+    fi
+fi
+trap '_cleanup_lock' EXIT
+
+# Compute time range
+now="$(date +%s)"
+start_epoch=$((now - acc))
+
+# Format for Clockify API (macOS and Linux compatible)
+if [[ "$(uname)" == "Darwin" ]]; then
+    start_time="$(date -u -r "$start_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+    end_time="$(date -u -r "$now" +%Y-%m-%dT%H:%M:%SZ)"
+else
+    start_time="$(date -u -d "@$start_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+    end_time="$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)"
+fi
+
+# Generate summary from tasks.log
+summary=""
+if [[ -f "$tasks_file" ]] && [[ -s "$tasks_file" ]]; then
+    summary="$(python3 -c "
+import sys
+
+lines = []
+try:
+    with open('$tasks_file') as f:
+        lines = f.readlines()
+except:
+    pass
+
+# Extract descriptions, most recent first
+descs = []
+seen = set()
+for line in reversed(lines):
+    parts = line.strip().split('|', 2)
+    if len(parts) >= 3:
+        desc = parts[2].strip()
+        if desc and desc not in seen:
+            seen.add(desc)
+            descs.append(desc)
+
+if descs:
+    result = '; '.join(descs)
+    if len(result) > 120:
+        result = result[:117] + '...'
+    if len(result) < 60:
+        result = result + ' — $ORCH_PROJECT_ID'
+    if len(result) > 120:
+        result = result[:120]
+    print(result)
+" 2>/dev/null)" || true
+fi
+
+if [[ -z "$summary" ]]; then
+    summary="Active work on $ORCH_PROJECT_ID"
+fi
+
+# Create Clockify entry
+project_id="$(orch_clockify_find_or_create_project)" || {
+    echo "flush: no clockify project — skipping API call" >&2
+    echo "0" > "$accumulated_file"
+    exit 0
+}
+
+ws_path="/workspaces/$CLOCKIFY_WORKSPACE_ID"
+body="{\"start\":\"$start_time\",\"end\":\"$end_time\",\"description\":\"$summary\",\"projectId\":\"$project_id\"}"
+response="$(orch_clockify_api POST "${ws_path}/time-entries" "$body")" || {
+    echo "flush: clockify API call failed" >&2
+    # Don't reset accumulated on failure — retry next time
+    exit 1
+}
+
+entry_id="$(echo "$response" | python3 -c "
+import json, sys
+try:
+    print(json.load(sys.stdin)['id'])
+except:
+    pass
+" 2>/dev/null)" || true
+
+# Reset state
+echo "0" > "$accumulated_file"
+
+# Archive tasks.log
+if [[ -f "$tasks_file" ]] && [[ -s "$tasks_file" ]]; then
+    cat "$tasks_file" >> "$history_file"
+    : > "$tasks_file"
+fi
+
+# Update window title to show reset
+orch_tmux set-option -t "$ORCH_SESSION" set-titles-string "$ORCH_PROJECT_ID ● 0s" 2>/dev/null || true
+
+duration_fmt=""
+h=$((acc / 3600)); m=$(( (acc % 3600) / 60 ))
+if (( h > 0 )); then
+    duration_fmt="${h}h${m}m"
+else
+    duration_fmt="${m}m"
+fi
+
+echo "flush: ${duration_fmt} → clockify${entry_id:+ (entry $entry_id)}${reason:+ [reason=$reason]}"

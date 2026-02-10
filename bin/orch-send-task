@@ -32,4 +32,8 @@ fi
 task_file="$(cd "$(dirname "$task_file")" && pwd)/$(basename "$task_file")"
 "$(dirname "$0")/orch-send" "$name" "Read the task file at $task_file and execute the instructions in it."
 
+# Log task event for activity timer
+task_desc="$(head -c 200 "$task_file" | tr '\n' ' ')"
+orch_log_task "TASK" "$task_desc"
+
 echo "task sent to worker '$name' via $(basename "$task_file")"

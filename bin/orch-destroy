@@ -84,11 +84,9 @@ if orch_worker_exists "$name"; then
     orch_tmux kill-pane -t "$pane_id" 2>/dev/null || true
 fi
 
-# Stop Clockify timer
+# Log task event for activity timer
 if [[ -n "$summary" ]]; then
-    orch_clockify_stop "$name" "$summary" || true
-else
-    orch_clockify_stop "$name" "worker destroyed without summary" || true
+    orch_log_task "DESTROY" "$summary"
 fi
 
 # Clean up pane file

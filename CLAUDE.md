@@ -24,9 +24,10 @@ All `orch-*` commands are on PATH. Worker name defaults to `main` if omitted.
 | `orch-send-task` | `orch-send-task [name] --file <path>` | Send a task from an existing file |
 | `orch-read` | `orch-read [name] [lines]` | Read recent output (default 50, max 500) |
 | `orch-health` | `orch-health [name]` | Check if pane and claude are running |
-| `orch-list` | `orch-list` | List all workers with health and timer status |
-| `orch-destroy` | `orch-destroy [name] --summary "desc"` | Save output, stop timer, exit claude, remove pane |
-| `orch-clock` | `orch-clock start/stop "desc"` | Track orchestrator active time |
+| `orch-list` | `orch-list` | List all workers with health status |
+| `orch-destroy` | `orch-destroy [name] --summary "desc"` | Save output, exit claude, remove pane |
+| `orch-timer` | `orch-timer start/stop/status` | Manage activity timer daemon |
+| `orch-flush` | `orch-flush` | Flush accumulated time to Clockify |
 | `orch-reload` | `orch-reload` | Re-read init-prompt.md without losing context |
 
 ## Layout
@@ -50,16 +51,18 @@ Per-project in `.orch/` (gitignored):
 - `.orch/panes/` — maps worker names to tmux pane IDs
 - `.orch/workers.jsonl` — log of create/destroy events
 - `.orch/tasks/` — task files and final output logs
-- `.orch/clockify/` — Clockify timer state (entry IDs, project cache)
+- `.orch/clockify/` — Activity timer state, task log, Clockify project cache
 
 ## Time Tracking
 
-Clockify integration tracks time automatically:
+Activity-based time tracking via a background daemon:
 
-- **Workers**: timer starts on `orch-create`, stops on `orch-destroy`
-- **Orchestrator**: use `orch-clock start "description"` / `orch-clock stop` for active work periods
-- **Projects**: auto-created in Clockify from `ORCH_PROJECT_ID` (the tmux title bar name)
-- **Summaries**: `orch-destroy` requires `--summary "60-120 char description"` (use `--force` to skip)
+- **Automatic**: `orch-timer` daemon polls tmux `window_activity` every 10s — any pane output counts as active work
+- **Batched entries**: accumulated time flushes to Clockify at 30-minute intervals, after 5 min of inactivity, or on session exit
+- **Auto-summaries**: generated from a task event log (worker creates, task sends, destroy summaries)
+- **Window title**: shows `<project> ● <accumulated time>` while timer is running
+- **Manual flush**: `Ctrl-b t` or `orch-flush` to flush immediately
+- **Projects**: auto-created in Clockify from `ORCH_PROJECT_ID`
 
 Configuration: set `CLOCKIFY_API_KEY` in `.env` (loaded via zshrc). If not set, all Clockify calls are silently skipped.
 
@@ -74,6 +77,7 @@ If `.orch/GOALS.md` exists, the orchestrator reads it on startup and begins work
 - `Ctrl-b p` — pause all workers
 - `Ctrl-b P` — pause focused pane
 - `Ctrl-b r` — reload orchestrator config (re-read init-prompt.md)
+- `Ctrl-b t` — flush accumulated time to Clockify
 - **Mouse select to copy** — drag to highlight text, copies to system clipboard on release (via `pbcopy`)
 - **Click to focus** — click any pane to switch to it
 
