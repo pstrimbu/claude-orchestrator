@@ -52,6 +52,9 @@ if orch_session_exists; then
     workdir="$(pwd -P)"
     orch_tmux set-option -t "$ORCH_SESSION" set-titles on 2>/dev/null || true
     orch_tmux set-option -t "$ORCH_SESSION" set-titles-string "$ORCH_PROJECT_ID" 2>/dev/null || true
+    # Prevent flashing on attach from different terminal sizes
+    orch_tmux set-option -t "$ORCH_SESSION" window-size latest 2>/dev/null || true
+    orch_tmux set-window-option -t "$ORCH_SESSION" aggressive-resize on 2>/dev/null || true
     # Ensure detach hook is set (picks up new feature on existing sessions)
     orch_tmux set-hook -t "$ORCH_SESSION" client-detached "run-shell \"cd $workdir && $ORCH_HOME/bin/orch-flush --reason detach\"" 2>/dev/null || true
     # Ensure timer daemon is running
@@ -75,6 +78,10 @@ else
     orch_tmux set-option -t "$ORCH_SESSION" mouse on
     orch_tmux set-option -t "$ORCH_SESSION" set-clipboard on
     orch_tmux set-option -t "$ORCH_SESSION" history-limit 50000
+    # Size windows to the most-recently-active client instead of the smallest
+    # — prevents flashing/redraw loops when attaching from different terminal sizes
+    orch_tmux set-option -t "$ORCH_SESSION" window-size latest
+    orch_tmux set-window-option -t "$ORCH_SESSION" aggressive-resize on
     orch_tmux set-option -t "$ORCH_SESSION" pane-border-status top
     orch_tmux set-option -t "$ORCH_SESSION" pane-border-format '#{pane_index}: #{pane_title}'
     orch_tmux set-window-option -t "$ORCH_SESSION" main-pane-width 50% 2>/dev/null || true
