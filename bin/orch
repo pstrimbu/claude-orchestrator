@@ -64,8 +64,11 @@ else
     mkdir -p "$(dirname "$ORCH_TMUX_SOCK")"
     # Use actual terminal dimensions to avoid tmux dot-fill on attach
     cols="$(tput cols 2>/dev/null || echo 200)"
-    lines="$(tput lines 2>/dev/null || echo 50)"
-    orch_tmux new-session -d -s "$ORCH_SESSION" -c "$workdir" -x "$cols" -y "$lines"
+    rows="$(tput lines 2>/dev/null || echo 50)"
+    # Sanity check: reject absurd dimensions (e.g. tput returns 1 from a tiny pane)
+    (( cols < 80 )) && cols=200
+    (( rows < 24 )) && rows=50
+    orch_tmux new-session -d -s "$ORCH_SESSION" -c "$workdir" -x "$cols" -y "$rows"
     orch_tmux rename-window -t "$ORCH_SESSION" "$ORCH_PROJECT_ID"
     orch_tmux set-option -t "$ORCH_SESSION" set-titles on
     orch_tmux set-option -t "$ORCH_SESSION" set-titles-string "$ORCH_PROJECT_ID"
