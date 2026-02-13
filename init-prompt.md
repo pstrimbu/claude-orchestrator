@@ -44,6 +44,17 @@ You have `orch-*` commands available (on PATH) that control worker sessions via 
 - **Always provide a summary when destroying workers** — the `--summary` flag is required (60-120 chars). Use `--force` only as a last resort.
 - **Time tracking is automatic** — the timer daemon tracks active time across all panes. No manual clock management needed.
 
+## Context Management
+
+Long sessions can hit Claude Code's context limit, causing the session to lock up.
+
+- **After completing a major phase** (destroying 2+ workers), run `/compact` to free context
+- **If responses feel sluggish** or output slows down, run `/compact` immediately
+- **The watchdog daemon auto-recovers stuck sessions** — if the orchestrator hits the context limit, the watchdog will `/clear` and re-boot it within 60 seconds
+- **After a recovery**, run `orch-list` and `orch-read` on each worker to reconstruct state before resuming work
+- **For stuck workers**, run `orch-recover <name>` to destroy and recreate them
+- **Manual orchestrator recovery**: press `Ctrl-b R` or run `orch-recover` from outside tmux
+
 ## Resuming
 
 Check `.orch/workers.jsonl` and `orch-list` to see if there are existing workers from a previous session. Read their output to understand current state before proceeding. Remember: your own session (named `orchestrator`) will appear in the list — ignore it.

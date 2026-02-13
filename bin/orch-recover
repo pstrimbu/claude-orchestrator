@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# orch-recover — Recover a pane stuck at context limit
+# Usage: orch-recover [name]
+#   No name or "orchestrator" → recover orchestrator pane
+#   Worker name → destroy + recreate the worker
+set -euo pipefail
+source "$(dirname "$0")/orch-lib.sh"
+
+target="${1:-orchestrator}"
+
+if [[ "$target" == "orchestrator" ]]; then
+    pane_id="${ORCH_SESSION}:0.0"
+
+    # Verify pane exists
+    if ! orch_tmux display-message -t "$pane_id" -p '' >/dev/null 2>&1; then
+        echo "error: orchestrator pane not found" >&2
+        exit 1
+    fi
+
+    workdir="$(pwd -P)"
+    task_dir="$(orch_task_dir)"
+    ts="$(date +%Y%m%d-%H%M%S)"
+    recovery_log="$task_dir/orchestrator-recovery-${ts}.log"
+
+    echo "saving output to $recovery_log..."
+    orch_tmux capture-pane -t "$pane_id" -p -S -200 > "$recovery_log" 2>/dev/null || true
+
+    echo "sending escape + /clear..."
+    orch_tmux send-keys -t "$pane_id" Escape 2>/dev/null || true
+    sleep 0.5
+    orch_tmux send-keys -t "$pane_id" Escape 2>/dev/null || true
+    sleep 1
+
+    orch_tmux send-keys -t "$pane_id" "/clear" Enter 2>/dev/null || true
+    echo "waiting for claude to reset..."
+    sleep 5
+
+    echo "re-sending boot message..."
+    msg="$(orch_build_boot_msg orchestrator)"
+    orch_tmux send-keys -l -t "$pane_id" -- "$msg" 2>/dev/null || true
+    sleep 0.3
+    orch_tmux send-keys -t "$pane_id" Enter 2>/dev/null || true
+    sleep 2
+
+    recovery_msg="RECOVERY: Your previous session hit the context limit and was manually cleared. Review the saved output at $recovery_log to understand where you left off. Run orch-list and orch-read to check worker states, then resume work."
+    orch_tmux send-keys -l -t "$pane_id" -- "$recovery_msg" 2>/dev/null || true
+    sleep 0.3
+    orch_tmux send-keys -t "$pane_id" Enter 2>/dev/null || true
+
+    orch_log_task "RECOVERY" "orchestrator manually recovered (log: $recovery_log)"
+    echo "orchestrator recovery complete — log at $recovery_log"
+else
+    # Worker recovery: destroy + recreate
+    name="$target"
+    orch_validate_name "$name"
+
+    if ! orch_worker_exists "$name"; then
+        echo "error: worker '$name' does not exist" >&2
+        exit 1
+    fi
+
+    echo "destroying stuck worker '$name'..."
+    "$ORCH_HOME/bin/orch-destroy" "$name" --summary "context limit recovery — auto-destroyed and recreated" --force 2>/dev/null || true
+
+    echo "recreating worker '$name'..."
+    "$ORCH_HOME/bin/orch-create" "$name"
+
+    orch_log_task "RECOVERY" "worker $name destroyed and recreated after context limit"
+    echo "worker '$name' recreated — send it a new task"
+fi

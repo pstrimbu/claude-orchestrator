@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+# orch-watchdog — Background daemon that monitors panes for context limit exhaustion
+# Usage: orch-watchdog start | stop | status | _daemon
+set -euo pipefail
+source "$(dirname "$0")/orch-lib.sh"
+
+POLL_INTERVAL=30
+CONFIRM_COUNT=2  # require 2 consecutive detections (60s) before acting
+
+clockify_dir="$(orch_clockify_dir)"
+pid_file="$clockify_dir/watchdog.pid"
+
+# Track consecutive stuck detections per pane: .orch/clockify/watchdog-stuck-<pane_id>
+_stuck_count_file() {
+    local pane_id="$1"
+    local safe_id="${pane_id//[^a-zA-Z0-9_-]/_}"
+    echo "$clockify_dir/watchdog-stuck-${safe_id}"
+}
+
+_get_stuck_count() {
+    local f
+    f="$(_stuck_count_file "$1")"
+    if [[ -f "$f" ]]; then cat "$f"; else echo 0; fi
+}
+
+_set_stuck_count() {
+    echo "$2" > "$(_stuck_count_file "$1")"
+}
+
+_clear_stuck_count() {
+    rm -f "$(_stuck_count_file "$1")"
+}
+
+_is_running() {
+    if [[ -f "$pid_file" ]]; then
+        local pid
+        pid="$(cat "$pid_file")"
+        if kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+        rm -f "$pid_file"
+    fi
+    return 1
+}
+
+_recover_orchestrator() {
+    local pane_id="$1"
+    local workdir
+    workdir="$(pwd -P)"
+    local task_dir
+    task_dir="$(orch_task_dir)"
+    local ts
+    ts="$(date +%Y%m%d-%H%M%S)"
+    local recovery_log="$task_dir/orchestrator-recovery-${ts}.log"
+
+    # Save last 200 lines
+    orch_tmux capture-pane -t "$pane_id" -p -S -200 > "$recovery_log" 2>/dev/null || true
+
+    # Dismiss any pending state
+    orch_tmux send-keys -t "$pane_id" Escape 2>/dev/null || true
+    sleep 0.5
+    orch_tmux send-keys -t "$pane_id" Escape 2>/dev/null || true
+    sleep 1
+
+    # Send /clear
+    orch_tmux send-keys -t "$pane_id" "/clear" Enter 2>/dev/null || true
+    sleep 5
+
+    # Re-send boot message
+    local msg
+    msg="$(orch_build_boot_msg orchestrator)"
+    orch_tmux send-keys -l -t "$pane_id" -- "$msg" 2>/dev/null || true
+    sleep 0.3
+    orch_tmux send-keys -t "$pane_id" Enter 2>/dev/null || true
+    sleep 2
+
+    # Send recovery context
+    local recovery_msg="RECOVERY: Your previous session hit the context limit and was automatically cleared. Review the saved output at $recovery_log to understand where you left off. Run orch-list and orch-read to check worker states, then resume work."
+    orch_tmux send-keys -l -t "$pane_id" -- "$recovery_msg" 2>/dev/null || true
+    sleep 0.3
+    orch_tmux send-keys -t "$pane_id" Enter 2>/dev/null || true
+
+    orch_log_task "RECOVERY" "orchestrator auto-recovered from context limit (log: $recovery_log)"
+}
+
+_notify_orchestrator_about_worker() {
+    local worker_name="$1"
+    local orch_pane_id="${ORCH_SESSION}:0.0"
+
+    # Only notify if orchestrator pane is healthy
+    if ! orch_pane_stuck "$orch_pane_id"; then
+        local msg="ALERT: Worker '$worker_name' hit context limit and is stuck. Run: orch-recover $worker_name"
+        orch_tmux send-keys -l -t "$orch_pane_id" -- "$msg" 2>/dev/null || true
+        sleep 0.3
+        orch_tmux send-keys -t "$orch_pane_id" Enter 2>/dev/null || true
+    fi
+
+    orch_log_task "STUCK" "worker $worker_name hit context limit"
+}
+
+_daemon() {
+    trap 'rm -f "$pid_file"; exit 0' TERM INT
+
+    while true; do
+        sleep "$POLL_INTERVAL"
+
+        # Check if tmux session still exists
+        if ! orch_session_exists; then
+            rm -f "$pid_file"
+            exit 0
+        fi
+
+        # Check orchestrator pane
+        local orch_pane="${ORCH_SESSION}:0.0"
+        if orch_pane_stuck "$orch_pane"; then
+            local count
+            count="$(_get_stuck_count "$orch_pane")"
+            count=$((count + 1))
+            _set_stuck_count "$orch_pane" "$count"
+
+            if (( count >= CONFIRM_COUNT )); then
+                _recover_orchestrator "$orch_pane"
+                _clear_stuck_count "$orch_pane"
+            fi
+        else
+            _clear_stuck_count "$orch_pane"
+        fi
+
+        # Check worker panes
+        local pane_dir
+        pane_dir="$(orch_pane_dir)"
+        for pane_file in "$pane_dir"/*; do
+            [[ -f "$pane_file" ]] || continue
+            local worker_name
+            worker_name="$(basename "$pane_file")"
+            local pane_id
+            pane_id="$(cat "$pane_file")"
+
+            # Verify pane exists
+            orch_tmux display-message -t "$pane_id" -p '' >/dev/null 2>&1 || continue
+
+            if orch_pane_stuck "$pane_id"; then
+                local count
+                count="$(_get_stuck_count "$pane_id")"
+                count=$((count + 1))
+                _set_stuck_count "$pane_id" "$count"
+
+                if (( count >= CONFIRM_COUNT )); then
+                    _notify_orchestrator_about_worker "$worker_name"
+                    _clear_stuck_count "$pane_id"
+                fi
+            else
+                _clear_stuck_count "$pane_id"
+            fi
+        done
+    done
+}
+
+action="${1:-status}"
+
+case "$action" in
+    start)
+        if _is_running; then
+            echo "watchdog already running (pid $(cat "$pid_file"))"
+            exit 0
+        fi
+
+        "$0" _daemon &
+        disown
+        daemon_pid=$!
+        echo "$daemon_pid" > "$pid_file"
+        echo "watchdog started (pid $daemon_pid)"
+        ;;
+
+    stop)
+        if ! _is_running; then
+            echo "watchdog not running"
+            exit 0
+        fi
+
+        pid="$(cat "$pid_file")"
+        kill "$pid" 2>/dev/null || true
+
+        for i in $(seq 1 6); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.5
+        done
+
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -9 "$pid" 2>/dev/null || true
+        fi
+
+        rm -f "$pid_file"
+        echo "watchdog stopped"
+        ;;
+
+    status)
+        if _is_running; then
+            echo "watchdog: running (pid $(cat "$pid_file"))"
+        else
+            echo "watchdog: not running"
+        fi
+        ;;
+
+    _daemon)
+        _daemon
+        ;;
+
+    *)
+        echo "usage: orch-watchdog start | stop | status" >&2
+        exit 1
+        ;;
+esac

@@ -82,6 +82,15 @@ orch_claude_running() {
     pgrep -P "$pane_pid" -f claude >/dev/null 2>&1
 }
 
+# Check if a pane is stuck at context limit.
+# Takes a tmux pane ID (not worker name). Returns 0 if stuck.
+orch_pane_stuck() {
+    local pane_id="$1"
+    local output
+    output="$(orch_tmux capture-pane -t "$pane_id" -p -S -15 -J 2>/dev/null)" || return 1
+    echo "$output" | grep -qiE 'context limit reached|Conversation too long|conversation is too long'
+}
+
 orch_session_exists() {
     orch_tmux has-session -t "$ORCH_SESSION" 2>/dev/null
 }

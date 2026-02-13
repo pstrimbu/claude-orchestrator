@@ -10,10 +10,15 @@ for pane_file in "$pane_dir"/*; do
     name="$(basename "$pane_file")"
     if orch_worker_exists "$name"; then
         claude_ok="no"
+        stuck="no"
         if orch_claude_running "$name"; then
             claude_ok="yes"
         fi
-        echo "$name  pane=yes claude=$claude_ok"
+        pane_id="$(cat "$pane_file")"
+        if orch_pane_stuck "$pane_id"; then
+            stuck="yes"
+        fi
+        echo "$name  pane=yes claude=$claude_ok stuck=$stuck"
     else
         # Auto-prune stale pane files
         rm -f "$pane_file"
@@ -23,3 +28,4 @@ done
 
 echo ""
 "$ORCH_HOME/bin/orch-timer" status 2>/dev/null || echo "timer: not running"
+"$ORCH_HOME/bin/orch-watchdog" status 2>/dev/null || echo "watchdog: not running"

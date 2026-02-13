@@ -19,6 +19,8 @@ Commands (all default worker name to "main"):
   orch-list                      List all workers with status
   orch-timer start|stop|status    Manage activity timer daemon
   orch-flush                     Flush accumulated time to Clockify
+  orch-recover [name]             Recover stuck pane (context limit)
+  orch-watchdog start|stop|status Manage context limit watchdog
   orch-pause [name|--all]        Pause worker(s)
   orch-reload                    Reload orchestrator config
 
@@ -29,7 +31,8 @@ tmux keybindings:
   Ctrl-b P    Pause focused pane
   Ctrl-b r    Reload orchestrator config (re-read init-prompt.md)
   Ctrl-b t    Flush accumulated time to Clockify
-  Mouse drag  Select and copy to clipboard
+  Ctrl-b R    Recover stuck orchestrator (context limit)
+  Shift+drag  Select and copy to clipboard (bypasses app mouse capture)
 HELP
     exit 0
 fi
@@ -39,6 +42,7 @@ source "$(dirname "$0")/orch-lib.sh"
 # Clean up stale tmux server from old naming convention
 if ! orch_session_exists && [[ -S "$ORCH_TMUX_SOCK" ]]; then
     "$ORCH_HOME/bin/orch-timer" stop 2>/dev/null || true
+    "$ORCH_HOME/bin/orch-watchdog" stop 2>/dev/null || true
     if orch_tmux list-sessions >/dev/null 2>&1; then
         echo "cleaning up stale tmux server (session name mismatch)..."
         orch_tmux kill-server 2>/dev/null || true
@@ -55,10 +59,16 @@ if orch_session_exists; then
     # Prevent flashing on attach from different terminal sizes
     orch_tmux set-option -t "$ORCH_SESSION" window-size latest 2>/dev/null || true
     orch_tmux set-window-option -t "$ORCH_SESSION" aggressive-resize on 2>/dev/null || true
+    # Terminal UX: ensure these are set on existing sessions too
+    orch_tmux set-option -s extended-keys on 2>/dev/null || true
+    orch_tmux set-option -s escape-time 0 2>/dev/null || true
+    orch_tmux set-option -s focus-events on 2>/dev/null || true
+    orch_tmux set-window-option -g allow-passthrough on 2>/dev/null || true
     # Ensure detach hook is set (picks up new feature on existing sessions)
     orch_tmux set-hook -t "$ORCH_SESSION" client-detached "run-shell \"cd $workdir && $ORCH_HOME/bin/orch-flush --reason detach\"" 2>/dev/null || true
-    # Ensure timer daemon is running
+    # Ensure daemons are running
     "$ORCH_HOME/bin/orch-timer" start 2>/dev/null || true
+    "$ORCH_HOME/bin/orch-watchdog" start 2>/dev/null || true
     echo "attaching to $ORCH_SESSION"
     TMUX= orch_tmux attach -t "$ORCH_SESSION"
 else
@@ -86,22 +96,31 @@ else
     orch_tmux set-option -t "$ORCH_SESSION" pane-border-format '#{pane_index}: #{pane_title}'
     orch_tmux set-window-option -t "$ORCH_SESSION" main-pane-width 50% 2>/dev/null || true
 
+    # Terminal UX: pass through modified keys (Option+Delete etc), eliminate
+    # escape-sequence ambiguity, notify apps on focus, allow OSC passthrough
+    orch_tmux set-option -s extended-keys on
+    orch_tmux set-option -s escape-time 0
+    orch_tmux set-option -s focus-events on
+    orch_tmux set-window-option -g allow-passthrough on
+
     # Copy mode: mouse drag selects and copies to system clipboard
     orch_tmux bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "pbcopy"
     orch_tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "pbcopy"
 
-    # Keybindings: Ctrl-b p = pause all, P = pause focused, r = reload config, h = help
+    # Keybindings: Ctrl-b p = pause all, P = pause focused, r = reload config, h = help, R = recover
     orch_tmux bind-key -T prefix p run-shell "$ORCH_HOME/bin/orch-pause --all"
     orch_tmux bind-key -T prefix P send-keys Escape
     orch_tmux bind-key -T prefix r run-shell "$ORCH_HOME/bin/orch-reload"
     orch_tmux bind-key -T prefix h display-popup -w 70 -h 30 "$ORCH_HOME/bin/orch --help"
     orch_tmux bind-key -T prefix t run-shell "$ORCH_HOME/bin/orch-flush --reason manual"
+    orch_tmux bind-key -T prefix R run-shell "cd $workdir && $ORCH_HOME/bin/orch-recover"
 
     # Flush time on detach (Ctrl-b d)
     orch_tmux set-hook -t "$ORCH_SESSION" client-detached "run-shell \"cd $workdir && $ORCH_HOME/bin/orch-flush --reason detach\""
 
-    # Start activity timer daemon
+    # Start daemons (activity timer + context limit watchdog)
     "$ORCH_HOME/bin/orch-timer" start 2>/dev/null || true
+    "$ORCH_HOME/bin/orch-watchdog" start 2>/dev/null || true
 
     orch_tmux send-keys -t "$ORCH_SESSION" "claude --dangerously-skip-permissions" Enter
 

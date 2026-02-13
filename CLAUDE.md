@@ -29,6 +29,8 @@ All `orch-*` commands are on PATH. Worker name defaults to `main` if omitted.
 | `orch-log` | `orch-log "description"` | Log a goal/task for Clockify summaries |
 | `orch-timer` | `orch-timer start/stop/status` | Manage activity timer daemon |
 | `orch-flush` | `orch-flush` | Flush accumulated time to Clockify |
+| `orch-watchdog` | `orch-watchdog start/stop/status` | Manage context limit watchdog daemon |
+| `orch-recover` | `orch-recover [name]` | Recover pane stuck at context limit |
 | `orch-reload` | `orch-reload` | Re-read init-prompt.md without losing context |
 
 ## Layout
@@ -79,8 +81,21 @@ If `.orch/GOALS.md` exists, the orchestrator reads it on startup and begins work
 - `Ctrl-b P` — pause focused pane
 - `Ctrl-b r` — reload orchestrator config (re-read init-prompt.md)
 - `Ctrl-b t` — flush accumulated time to Clockify
-- **Mouse select to copy** — drag to highlight text, copies to system clipboard on release (via `pbcopy`)
+- `Ctrl-b R` — recover stuck orchestrator (context limit)
+- **Shift+drag to copy** — hold Shift and drag to select text, copies to system clipboard (bypasses app mouse capture)
 - **Click to focus** — click any pane to switch to it
+- **Option+Delete** — delete word backward (extended-keys enabled)
+
+## Fault Tolerance
+
+Context limit watchdog daemon runs alongside the timer daemon:
+
+- **Automatic detection**: polls all panes every 30s for "Context limit reached" / "Conversation too long"
+- **Confirmed stuck**: requires 2 consecutive detections (60s) before acting
+- **Worker stuck**: alerts the orchestrator pane with a recovery command
+- **Orchestrator stuck**: saves output to recovery log, runs `/clear`, re-boots with init-prompt.md, sends recovery context
+- **Manual recovery**: `orch-recover [name]` or `Ctrl-b R` for orchestrator
+- **Health checks**: `orch-health` returns exit code 2 for stuck panes, `orch-list` shows `stuck=yes/no`
 
 ## Rules
 
