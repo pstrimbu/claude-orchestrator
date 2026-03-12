@@ -1,3 +1,7 @@
 .orch/
 .env
 .DS_Store
+node_modules/
+v3/dist/
+v3/src/main/version.ts
+.releases/

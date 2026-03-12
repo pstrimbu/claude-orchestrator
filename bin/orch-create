@@ -21,7 +21,7 @@ pane_id="$(orch_tmux split-window -t "$ORCH_SESSION" -h -P -F '#{pane_id}' -c "$
 orch_relayout
 
 # Start claude in the new pane
-orch_tmux send-keys -t "$pane_id" "claude --dangerously-skip-permissions" Enter
+orch_tmux send-keys -t "$pane_id" "unset CLAUDECODE; claude --dangerously-skip-permissions" Enter
 
 # Store pane ID
 pane_dir="$(orch_pane_dir)"

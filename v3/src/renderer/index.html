@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>orch3</title>
+  <link rel="stylesheet" href="xterm.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="status-bar">
+    <div class="status-section" id="status-project" data-hotkey="f1">
+      <span class="status-label">F1</span>
+      <span class="status-value" id="status-project-name">—</span>
+    </div>
+    <div class="status-sep">│</div>
+    <div class="status-section" id="status-time">
+      <span class="status-label">⏱</span>
+      <span class="status-value" id="status-time-value">0m</span>
+      <span class="status-indicator" id="status-time-indicator">○</span>
+    </div>
+    <div class="status-sep">│</div>
+    <div class="status-section" id="status-issues">
+      <span class="status-value" id="status-issues-value">No tracker</span>
+    </div>
+    <div class="status-sep">│</div>
+    <div class="status-section" id="status-git">
+      <span class="status-label">⎇</span>
+      <span class="status-value" id="status-git-value">—</span>
+    </div>
+    <div class="status-spacer"></div>
+    <div class="status-command" id="status-command" title=""></div>
+  </div>
+  <div id="terminal-container"></div>
+  <div id="overlay-backdrop" class="hidden"></div>
+  <div id="overlay-panel" class="hidden"></div>
+  <script src="renderer.js"></script>
+</body>
+</html>

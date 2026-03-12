@@ -10,6 +10,7 @@ import { showIssuesOverlay } from './issues-overlay';
 import { showProjectOverlay } from './project-overlay';
 import { showGitOverlay } from './git-overlay';
 import { showHistoryOverlay } from './history-overlay';
+import { VERSION } from '../version';
 
 export function showMainMenu(
   overlay: OverlayManager,
@@ -35,7 +36,7 @@ export function showMainMenu(
     : 'Not a git repo';
 
   overlay.show({
-    title: `orch3 — ${config.projectName}`,
+    title: `orch3 ${VERSION} — ${config.projectName}`,
     items: [
       {
         label: '[P] Project',

@@ -1,0 +1,248 @@
+:root {
+  --bg: #1e1e1e;
+  --fg: #cccccc;
+  --status-bg: #2d2d2d;
+  --status-fg: #b0b0b0;
+  --accent: #5fafff;
+  --active: #87d787;
+  --warn: #ffd75f;
+  --error: #ff5f5f;
+  --dim: #808080;
+  --hotkey: #5fd7ff;
+  --sep: #444444;
+  --overlay-bg: #252525;
+  --overlay-border: #555555;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  font-size: 13px;
+}
+
+/* Status bar */
+#status-bar {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  background: var(--status-bg);
+  border-bottom: 1px solid var(--sep);
+  padding: 0 8px;
+  gap: 0;
+  user-select: none;
+  cursor: default;
+  flex-shrink: 0;
+}
+
+.status-section {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.status-section:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.status-sep {
+  color: var(--sep);
+  padding: 0 4px;
+  font-size: 11px;
+}
+
+.status-spacer {
+  flex: 1;
+}
+
+.status-command {
+  color: var(--dim);
+  font-size: 11px;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px;
+  cursor: default;
+}
+
+.status-label {
+  color: var(--hotkey);
+  font-size: 11px;
+  font-weight: bold;
+}
+
+.status-value {
+  color: var(--status-fg);
+  font-size: 12px;
+}
+
+.status-indicator {
+  font-size: 10px;
+}
+
+.status-indicator.recording {
+  color: var(--active);
+}
+
+.status-indicator.stopped {
+  color: var(--dim);
+}
+
+/* Terminal */
+#terminal-container {
+  flex: 1;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Overlay */
+#overlay-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 100;
+}
+
+#overlay-panel {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--overlay-bg);
+  border: 1px solid var(--overlay-border);
+  border-radius: 6px;
+  min-width: 400px;
+  max-width: 700px;
+  max-height: 80vh;
+  overflow-y: auto;
+  z-index: 101;
+  padding: 0;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.overlay-title {
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: bold;
+  color: var(--fg);
+  border-bottom: 1px solid var(--sep);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.overlay-items {
+  padding: 6px 0;
+}
+
+.overlay-item {
+  padding: 4px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.overlay-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.overlay-item.selected {
+  background: rgba(95, 175, 255, 0.15);
+}
+
+.overlay-item.dimmed {
+  color: var(--dim);
+  cursor: default;
+}
+
+.overlay-item.dimmed:hover {
+  background: none;
+}
+
+.overlay-item .item-label {
+  flex: 1;
+}
+
+.overlay-item .item-value {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.overlay-item.empty {
+  height: 8px;
+  padding: 0;
+}
+
+.overlay-item .edit-field {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--sep);
+  border-radius: 3px;
+  padding: 2px 6px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12px;
+  min-width: 200px;
+}
+
+.overlay-item .edit-field.editing {
+  border-color: var(--accent);
+}
+
+.overlay-item .edit-cursor {
+  color: var(--accent);
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+.overlay-footer {
+  padding: 8px 16px;
+  font-size: 11px;
+  color: var(--hotkey);
+  border-top: 1px solid var(--sep);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.overlay-message {
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--warn);
+}
+
+.overlay-loading {
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* Xterm overrides */
+.xterm {
+  padding: 4px 0 0 4px;
+}

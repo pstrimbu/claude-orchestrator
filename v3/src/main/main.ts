@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import { join, resolve } from 'path';
 import { execSync } from 'child_process';
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
@@ -370,6 +370,10 @@ function setupIpc(): void {
 
   ipcMain.on(IPC.OVERLAY_KEY, (_e, key: string, rawBytes?: number[]) => {
     overlay.handleKey(key, rawBytes);
+  });
+
+  ipcMain.on(IPC.OPEN_URL, (_e, url: string) => {
+    shell.openExternal(url);
   });
 }
 

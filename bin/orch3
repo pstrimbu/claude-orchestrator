@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# orch3 — Launch Claude Orchestrator v3 (Electron app)
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$SCRIPT_DIR/.."
+RELEASE_DIR="$REPO_DIR/.releases"
+
+# Parse arguments — separate flags from project path
+ARGS=()
+PROJECT_PATH=""
+USE_DEV=false
+USE_VERSION=""
+for arg in "$@"; do
+  case "$arg" in
+    --dev)
+      USE_DEV=true
+      ;;
+    --version=*)
+      USE_VERSION="${arg#--version=}"
+      ;;
+    -c|--continue|-h|--help)
+      ARGS+=("$arg")
+      ;;
+    -r|--resume)
+      ARGS+=("$arg")
+      ;;
+    -*)
+      ARGS+=("$arg")
+      ;;
+    *)
+      # If previous arg was --resume/-r, this is the session ID
+      if [[ ${#ARGS[@]} -gt 0 && ( "${ARGS[-1]}" == "-r" || "${ARGS[-1]}" == "--resume" ) ]]; then
+        ARGS+=("$arg")
+      elif [ -z "$PROJECT_PATH" ]; then
+        PROJECT_PATH="$arg"
+      else
+        ARGS+=("$arg")
+      fi
+      ;;
+  esac
+done
+
+# Default to current directory if no project path given
+PROJECT_PATH="${PROJECT_PATH:-$(pwd)}"
+
+# Resolve to absolute path
+PROJECT_PATH="$(cd "$PROJECT_PATH" && pwd)"
+
+# Ensure .orch dir exists
+mkdir -p "$PROJECT_PATH/.orch"
+
+# Load .env files safely (handles values with special chars)
+load_env() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Skip comments and blank lines
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// }" ]] && continue
+    # Extract KEY=VALUE, export with quoting to handle special chars
+    if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*) ]]; then
+      export "${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"
+    fi
+  done < "$file"
+}
+
+load_env "$PROJECT_PATH/.env"
+load_env "$REPO_DIR/.env"
+
+# --- Determine which v3 directory to use ---
+if [ "$USE_DEV" = true ]; then
+  # Dev mode: run from working tree
+  V3_DIR="$REPO_DIR/v3"
+  echo "Running in dev mode from working tree"
+else
+  # Release mode: checkout a specific tag into .releases/<tag>/v3
+  if [ -z "$USE_VERSION" ]; then
+    # Find latest tag
+    USE_VERSION="$(cd "$REPO_DIR" && git describe --tags --abbrev=0 2>/dev/null || echo "")"
+    if [ -z "$USE_VERSION" ]; then
+      echo "No tags found, falling back to dev mode"
+      V3_DIR="$REPO_DIR/v3"
+    fi
+  fi
+
+  if [ -n "$USE_VERSION" ]; then
+    RELEASE_V3="$RELEASE_DIR/$USE_VERSION/v3"
+
+    if [ ! -d "$RELEASE_V3/dist" ]; then
+      echo "Preparing release $USE_VERSION..."
+      mkdir -p "$RELEASE_DIR/$USE_VERSION"
+
+      # Export the tagged version's v3 directory
+      (cd "$REPO_DIR" && git archive "$USE_VERSION" -- v3/ | tar -x -C "$RELEASE_DIR/$USE_VERSION")
+
+      # Install deps and build
+      (cd "$RELEASE_V3" && npm install && npm run build)
+      echo "Release $USE_VERSION ready"
+    fi
+
+    V3_DIR="$RELEASE_V3"
+    echo "Running $USE_VERSION"
+  fi
+fi
+
+# Check if dependencies are installed
+if [ ! -d "$V3_DIR/node_modules" ]; then
+  echo "Installing dependencies..."
+  (cd "$V3_DIR" && npm install)
+fi
+
+# Build if needed (dev mode only — releases are pre-built)
+if [ "$USE_DEV" = true ]; then
+  if [ ! -d "$V3_DIR/dist" ] || [ "$V3_DIR/src/main/main.ts" -nt "$V3_DIR/dist/main/main.js" ]; then
+    echo "Building..."
+    (cd "$V3_DIR" && npm run build)
+  fi
+fi
+
+# Run with Electron — detach so closing the terminal doesn't kill orch3
+ELECTRON="$V3_DIR/node_modules/.bin/electron"
+nohup "$ELECTRON" "$V3_DIR" "$PROJECT_PATH" ${ARGS[@]+"${ARGS[@]}"} >/dev/null 2>&1 &
+disown
