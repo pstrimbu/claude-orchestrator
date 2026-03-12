@@ -63,14 +63,25 @@ api.onPtyData((data) => {
 });
 
 // --- Resize ---
-const resizeObserver = new ResizeObserver(() => {
+let lastContainerWidth = 0;
+let lastContainerHeight = 0;
+
+function doFit(): void {
+  const w = container.clientWidth;
+  const h = container.clientHeight;
+  if (w === lastContainerWidth && h === lastContainerHeight) return;
+  lastContainerWidth = w;
+  lastContainerHeight = h;
+
   const wasAtBottom = term.buffer.active.viewportY >= term.buffer.active.baseY;
   fitAddon.fit();
   if (wasAtBottom) term.scrollToBottom();
   if (term.cols > 0 && term.rows > 0) {
     api.sendPtyResize(term.cols, term.rows);
   }
-});
+}
+
+const resizeObserver = new ResizeObserver(() => doFit());
 resizeObserver.observe(container);
 
 // --- Hotkeys ---
