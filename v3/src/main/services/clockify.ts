@@ -22,11 +22,16 @@ export class ClockifyService {
   private _accumulated = 0; // seconds
   private _flushTimer: ReturnType<typeof setInterval> | null = null;
   private _idleCheckTimer: ReturnType<typeof setInterval> | null = null;
+  private _eodCheckTimer: ReturnType<typeof setInterval> | null = null;
   private _lastActivityTime = 0;
+  private _lastActivityDay = -1; // day-of-year of last activity
   private _summaryProvider: (() => Promise<string>) | null = null;
   private static readonly IDLE_TIMEOUT_MS = 60_000; // pause after 60s of no output
 
-  constructor(private config: Config) {}
+  constructor(private config: Config) {
+    // Check every 60s if the day has rolled over
+    this._eodCheckTimer = setInterval(() => this.checkEndOfDay(), 60_000);
+  }
 
   setSummaryProvider(provider: () => Promise<string>): void {
     this._summaryProvider = provider;
@@ -80,6 +85,7 @@ export class ClockifyService {
   // Track activity from PTY output — call this when Claude produces output
   onActivity(): void {
     this._lastActivityTime = Date.now();
+    this._lastActivityDay = this.dayOfYear(new Date());
 
     if (!this.enabled) return;
 
@@ -115,7 +121,32 @@ export class ClockifyService {
     }
   }
 
-  async flush(): Promise<{ success: boolean; entryId?: string; error?: string }> {
+  private checkEndOfDay(): void {
+    if (!this.enabled) return;
+    if (this._lastActivityDay < 0) return; // no activity yet
+
+    const today = this.dayOfYear(new Date());
+    if (today === this._lastActivityDay) return; // same day
+
+    // Day rolled over — flush any accumulated time ending at last activity
+    const seconds = this.elapsed;
+    if (seconds >= 60) {
+      console.log('[clockify] end-of-day flush:', seconds, 'seconds');
+      this.flush(true).catch((e) => console.error('[clockify] eod flush error:', e));
+    } else if (seconds > 0) {
+      // Less than a minute — just reset
+      this._accumulated = 0;
+      this._startTime = this._recording ? new Date() : null;
+    }
+    this._lastActivityDay = today;
+  }
+
+  private dayOfYear(d: Date): number {
+    const start = new Date(d.getFullYear(), 0, 0);
+    return Math.floor((d.getTime() - start.getTime()) / 86_400_000);
+  }
+
+  async flush(useLastActivity = false): Promise<{ success: boolean; entryId?: string; error?: string }> {
     if (!this.enabled) return { success: false, error: 'Clockify not configured' };
 
     const seconds = this.elapsed;
@@ -133,8 +164,10 @@ export class ClockifyService {
       summary = `Active work on ${this.config.projectId}`;
     }
 
-    // Calculate start/end times
-    const end = new Date();
+    // Calculate start/end times — end-of-day flushes end at last activity
+    const end = (useLastActivity && this._lastActivityTime > 0)
+      ? new Date(this._lastActivityTime)
+      : new Date();
     const start = new Date(end.getTime() - seconds * 1000);
 
     try {
@@ -238,6 +271,10 @@ export class ClockifyService {
     if (this._idleCheckTimer) {
       clearInterval(this._idleCheckTimer);
       this._idleCheckTimer = null;
+    }
+    if (this._eodCheckTimer) {
+      clearInterval(this._eodCheckTimer);
+      this._eodCheckTimer = null;
     }
   }
 }
