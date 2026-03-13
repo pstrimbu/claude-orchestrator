@@ -187,6 +187,11 @@ function createWindow(): void {
   overlay = new OverlayManager(win);
   statusState = { currentIssue: null, gitBranch: '', gitDirty: false };
 
+  // Write PID file so the launcher can detect/focus this instance
+  try {
+    writeFileSync(join(config.orchDir, 'orch3.pid'), String(process.pid));
+  } catch { /* best effort */ }
+
   console.log('[orch3] config.projectName:', config.projectName);
   console.log('[orch3] config.projectPath:', config.projectPath);
 }
@@ -398,5 +403,10 @@ app.on('window-all-closed', () => {
   if (gitPollInterval) clearInterval(gitPollInterval);
   clockify?.destroy();
   session?.kill();
+  // Clean up PID file
+  try {
+    const { unlinkSync } = require('fs');
+    unlinkSync(join(projectPath, '.orch', 'orch3.pid'));
+  } catch { /* best effort */ }
   app.quit();
 });

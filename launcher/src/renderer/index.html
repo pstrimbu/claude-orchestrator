@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>orch3</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="collapsed">
+  <!-- Collapsed: thin strip of dots -->
+  <div id="collapsed-view">
+    <div id="dot-strip"></div>
+  </div>
+
+  <!-- Expanded: full project list -->
+  <div id="expanded-view">
+    <div id="titlebar">
+      <span class="title">orch3</span>
+      <div class="titlebar-actions">
+        <button id="cascade-btn" title="Cascade windows">&#9638;</button>
+        <button id="add-btn" title="Add project">+</button>
+      </div>
+    </div>
+    <div id="project-list"></div>
+  </div>
+  <script src="renderer.js"></script>
+</body>
+</html>

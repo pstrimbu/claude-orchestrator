@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# orch-launcher — Launch the orch3 project launcher UI
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LAUNCHER_DIR="$SCRIPT_DIR/../launcher"
+
+# Source orchestrator's .env for shared credentials
+if [ -f "$SCRIPT_DIR/../.env" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// }" ]] && continue
+    if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*) ]]; then
+      export "${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"
+    fi
+  done < "$SCRIPT_DIR/../.env"
+fi
+
+# Install deps if needed
+if [ ! -d "$LAUNCHER_DIR/node_modules" ]; then
+  echo "Installing launcher dependencies..."
+  (cd "$LAUNCHER_DIR" && npm install)
+fi
+
+# Build if needed
+if [ ! -d "$LAUNCHER_DIR/dist" ] || [ "$LAUNCHER_DIR/src/main.ts" -nt "$LAUNCHER_DIR/dist/main.js" ]; then
+  echo "Building launcher..."
+  (cd "$LAUNCHER_DIR" && npm run build)
+fi
+
+# Launch (not detached — it's a persistent UI)
+ELECTRON="$LAUNCHER_DIR/node_modules/.bin/electron"
+exec "$ELECTRON" "$LAUNCHER_DIR"
