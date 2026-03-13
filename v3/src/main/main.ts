@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import { join, resolve } from 'path';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
 import { IPC } from '../shared/ipc';
 import type { StatusBarData } from '../shared/ipc';
@@ -348,13 +348,21 @@ function setupIpc(): void {
       case 'f1':
         openMainMenu();
         break;
-      case 'f5':
+      case 'f5': {
         saveScrollback();
         if (clockify.recording) clockify.flush().catch(() => {});
         session?.kill();
-        app.relaunch();
+        // Relaunch via orch3 (on PATH) so it resolves the latest tag
+        const child = spawn('orch3', [projectPath, '--continue'], {
+          detached: true,
+          stdio: 'ignore',
+          cwd: projectPath,
+          shell: true,
+        });
+        child.unref();
         app.exit(0);
         break;
+      }
       case 'ctrl+r': {
         saveScrollback();
         session?.kill();

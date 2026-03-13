@@ -20,13 +20,14 @@ export class ClockifyService {
   private _recording = false;
   private _startTime: Date | null = null;
   private _accumulated = 0; // seconds
-  private _flushTimer: ReturnType<typeof setInterval> | null = null;
   private _idleCheckTimer: ReturnType<typeof setInterval> | null = null;
   private _eodCheckTimer: ReturnType<typeof setInterval> | null = null;
   private _lastActivityTime = 0;
   private _lastActivityDay = -1; // day-of-year of last activity
   private _summaryProvider: (() => Promise<string>) | null = null;
+  private _flushing = false;
   private static readonly IDLE_TIMEOUT_MS = 60_000; // pause after 60s of no output
+  private static readonly FLUSH_THRESHOLD_S = 30 * 60; // flush after 30min accumulated
 
   constructor(private config: Config) {
     // Check every 60s if the day has rolled over
@@ -62,9 +63,6 @@ export class ClockifyService {
     if (this._recording) return;
     this._recording = true;
     this._startTime = new Date();
-
-    // Auto-flush every 30 minutes
-    this._flushTimer = setInterval(() => this.flush(), 30 * 60 * 1000);
   }
 
   stop(): void {
@@ -75,11 +73,6 @@ export class ClockifyService {
     }
     this._recording = false;
     this._startTime = null;
-
-    if (this._flushTimer) {
-      clearInterval(this._flushTimer);
-      this._flushTimer = null;
-    }
   }
 
   // Track activity from PTY output — call this when Claude produces output
@@ -98,6 +91,12 @@ export class ClockifyService {
     if (!this._idleCheckTimer) {
       this._idleCheckTimer = setInterval(() => this.checkIdle(), 10_000);
     }
+
+    // Auto-flush when accumulated time hits threshold
+    if (!this._flushing && this.elapsed >= ClockifyService.FLUSH_THRESHOLD_S) {
+      this._flushing = true;
+      this.flush().catch(() => {}).finally(() => { this._flushing = false; });
+    }
   }
 
   private checkIdle(): void {
@@ -114,10 +113,6 @@ export class ClockifyService {
       }
       this._recording = false;
       this._startTime = null;
-      if (this._flushTimer) {
-        clearInterval(this._flushTimer);
-        this._flushTimer = null;
-      }
     }
   }
 
