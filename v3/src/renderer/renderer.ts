@@ -216,6 +216,9 @@ function escHtml(s: string): string {
 
 // --- Status bar ---
 api.onStatusUpdate((data: StatusBarData) => {
+  const claudeDot = document.getElementById('claude-dot')!;
+  claudeDot.className = `claude-dot ${data.claudeActive ? 'active' : 'idle'}`;
+
   document.getElementById('status-project-name')!.textContent = data.projectName;
   document.getElementById('status-time-value')!.textContent = data.timeElapsed;
 

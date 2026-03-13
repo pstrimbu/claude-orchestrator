@@ -53,6 +53,7 @@ export interface OverlayShowData {
 }
 
 export interface StatusBarData {
+  claudeActive: boolean;
   projectName: string;
   timeElapsed: string;
   timeRecording: boolean;

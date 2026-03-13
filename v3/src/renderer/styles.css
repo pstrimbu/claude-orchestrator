@@ -101,6 +101,23 @@ html, body {
   color: var(--dim);
 }
 
+.claude-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 4px;
+  transition: background 0.3s;
+}
+
+.claude-dot.active {
+  background: #ff5f5f;
+}
+
+.claude-dot.idle {
+  background: #87d787;
+}
+
 /* Terminal */
 #terminal-container {
   flex: 1;

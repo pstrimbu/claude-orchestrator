@@ -103,42 +103,56 @@ function cascadeWindows(): void {
   const running = statuses.filter((s) => s.running && s.pid);
   if (running.length === 0) return;
 
+  // Sort alphabetically by project name
+  running.sort((a, b) => a.name.localeCompare(b.name));
+
   const display = screen.getPrimaryDisplay();
   const { width: screenW, height: screenH } = display.workAreaSize;
+  const workAreaTop = display.workArea.y;
 
-  // Window size: fill most of the screen
-  const winW = Math.round(screenW * 0.85);
-  const winH = Math.round(screenH * 0.85);
+  const maxOffsetX = 30;
+  const maxOffsetY = 80;
 
-  // 10% offset per window (90% overlap)
-  const offsetX = Math.round(winW * 0.04);
-  const offsetY = Math.round(winH * 0.04);
+  // Get window size of first window to position bottom edge at dock
+  let winW = 1200;
+  let winH = 800;
+  try {
+    const sizeStr = execSync(
+      `osascript -e 'tell application "System Events" to get size of window 1 of (first process whose unix id is ${running[0]!.pid})'`,
+      { encoding: 'utf-8' },
+    ).trim();
+    const parts = sizeStr.split(',');
+    winW = parseInt(parts[0]!.trim(), 10) || 1200;
+    winH = parseInt(parts[1]!.trim(), 10) || 800;
+  } catch { /* use default */ }
 
-  // Start from bottom-left, cascade up-right
-  const totalOffsetX = offsetX * (running.length - 1);
-  const totalOffsetY = offsetY * (running.length - 1);
-  const startX = Math.max(0, Math.round((screenW - winW - totalOffsetX) / 2));
-  const startY = Math.min(screenH - winH, Math.round((screenH - winH + totalOffsetY) / 2));
+  // Position so bottom of first window abuts the dock
+  const baseX = Math.round((screenW - winW) / 2);
+  const baseY = workAreaTop + screenH - winH;
 
-  // Position last-to-first so first project ends up on top
+  // Calculate spacing so all windows fit between dock and menu bar
+  const availableY = baseY - workAreaTop;
+  const gaps = running.length - 1;
+  const offsetY = gaps > 0 ? Math.min(maxOffsetY, Math.floor(availableY / gaps)) : 0;
+  const offsetX = gaps > 0 ? Math.min(maxOffsetX, Math.floor(offsetY * maxOffsetX / maxOffsetY)) : 0;
+
+  // Build a single osascript — last-to-first so first ends up on top
+  const commands: string[] = [];
   for (let i = running.length - 1; i >= 0; i--) {
     const s = running[i]!;
-    const x = startX + offsetX * i;
-    const y = startY - offsetY * i;
-    try {
-      execSync(`osascript -e '
-        tell application "System Events"
-          set targetProc to first process whose unix id is ${s.pid}
-          tell targetProc
-            set position of window 1 to {${x}, ${y}}
-            set size of window 1 to {${winW}, ${winH}}
-            set frontmost to true
-          end tell
-        end tell
-      '`);
-    } catch (e) {
-      console.error(`[launcher] cascade failed for ${s.name}:`, e);
-    }
+    const x = baseX + offsetX * i;
+    const y = baseY - offsetY * i;
+    commands.push(
+      `set position of window 1 of (first process whose unix id is ${s.pid}) to {${x}, ${y}}`,
+      `set frontmost of (first process whose unix id is ${s.pid}) to true`,
+    );
+  }
+
+  const script = `tell application "System Events"\n${commands.join('\n')}\nend tell`;
+  try {
+    execSync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`);
+  } catch (e) {
+    console.error('[launcher] cascade failed:', e);
   }
 }
 

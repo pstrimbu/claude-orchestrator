@@ -60,6 +60,7 @@ let statusState: StatusBarState;
 let statusInterval: ReturnType<typeof setInterval> | null = null;
 let gitPollInterval: ReturnType<typeof setInterval> | null = null;
 let lastCommand = '';
+let lastPtyOutputTime = 0;
 let inputBuffer = '';
 
 // --- Scrollback buffer (ring buffer of recent PTY output) ---
@@ -218,6 +219,7 @@ function spawnSession(cols: number, rows: number): void {
         .replace(/\x1b\[\?1049h/g, '');               // strip alternate screen switch
     }
     appendScrollback(data);
+    lastPtyOutputTime = Date.now();
     if (!win.isDestroyed()) {
       win.webContents.send(IPC.PTY_DATA, data);
     }
@@ -261,6 +263,7 @@ function pollGitInfo(): void {
 function sendStatusUpdate(): void {
   if (win.isDestroyed()) return;
   const data: StatusBarData = {
+    claudeActive: (Date.now() - lastPtyOutputTime) < 2000,
     projectName: config.projectName,
     timeElapsed: clockify.formatElapsed(),
     timeRecording: clockify.recording,
