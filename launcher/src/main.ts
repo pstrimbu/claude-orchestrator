@@ -71,9 +71,12 @@ function getStatuses(projects: ProjectEntry[]): ProjectStatus[] {
 
 function focusWindow(pid: number): void {
   try {
-    execSync(
-      `osascript -e 'tell application "System Events" to set frontmost of (first process whose unix id is ${pid}) to true'`,
-    );
+    execSync(`osascript -e '
+      tell application "System Events"
+        set targetProc to first process whose unix id is ${pid}
+        set frontmost of targetProc to true
+      end tell
+    '`);
   } catch (e) {
     console.error('[launcher] focus failed:', e);
   }
@@ -125,7 +128,8 @@ function cascadeWindows(): void {
     try {
       execSync(`osascript -e '
         tell application "System Events"
-          tell process id ${s.pid}
+          set targetProc to first process whose unix id is ${s.pid}
+          tell targetProc
             set position of window 1 to {${x}, ${y}}
             set size of window 1 to {${winW}, ${winH}}
             set frontmost to true
