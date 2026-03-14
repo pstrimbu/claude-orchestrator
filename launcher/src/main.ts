@@ -134,10 +134,11 @@ function getRunningPid(projectPath: string): number | null {
     } catch { /* process dead or bad PID file */ }
   }
 
-  // Fallback: parse ps
+  // Fallback: parse ps (process.title is set to orch3-projectname)
   try {
+    const projName = projectPath.split('/').pop();
     const out = execSync(
-      `ps axo pid,args | grep 'Electron.*${projectPath}' | grep -v grep | grep -v Helper | head -1`,
+      `ps axo pid,command | grep -E 'orch3-${projName}|Electron.*${projectPath}' | grep -v grep | grep -v Helper | head -1`,
       { encoding: 'utf-8' },
     ).trim();
     if (out) {
@@ -156,25 +157,11 @@ function getStatuses(projects: ProjectEntry[]): ProjectStatus[] {
   });
 }
 
-function focusWindow(projectName: string): void {
-  const winTitle = `orch3 - ${projectName}`;
+function focusWindow(_projectName: string, pid: number | null): void {
+  if (!pid) return;
   try {
-    execSync(`osascript -e '
-      tell application "System Events"
-        set procs to every process whose name is "Electron"
-        repeat with p in procs
-          try
-            repeat with w in (every window of p)
-              if name of w contains "${winTitle}" then
-                perform action "AXRaise" of w
-                set frontmost of p to true
-                return
-              end if
-            end repeat
-          end try
-        end repeat
-      end tell
-    '`);
+    // Send SIGUSR1 to the orch3 process — it will call win.show() + win.focus()
+    process.kill(pid, 'SIGUSR1');
   } catch (e) {
     console.error('[launcher] focus failed:', e);
   }
@@ -392,8 +379,8 @@ ipcMain.on('projects:open', (_e, path: string) => {
   setTimeout(() => sendUpdate(), 5000);
 });
 
-ipcMain.on('projects:focus', (_e, name: string) => {
-  focusWindow(name);
+ipcMain.on('projects:focus', (_e, name: string, pid: number) => {
+  focusWindow(name, pid);
 });
 
 ipcMain.on('projects:stop', (_e, pid: number) => {

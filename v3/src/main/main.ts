@@ -402,6 +402,14 @@ const appName = `orch3-${projectPath.split('/').pop()}`;
 app.setName(appName);
 process.title = appName;
 
+// Focus window when receiving SIGUSR1 (used by launcher to bring window to front)
+process.on('SIGUSR1', () => {
+  if (win && !win.isDestroyed()) {
+    win.show();
+    win.focus();
+  }
+});
+
 app.whenReady().then(() => {
   console.log('[orch3] app ready');
   setupIpc();

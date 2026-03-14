@@ -5,7 +5,7 @@ contextBridge.exposeInMainWorld('launcherApi', {
   addProject: () => ipcRenderer.invoke('projects:add'),
   removeProject: (path: string) => ipcRenderer.send('projects:remove', path),
   openProject: (path: string) => ipcRenderer.send('projects:open', path),
-  focusProject: (name: string) => ipcRenderer.send('projects:focus', name),
+  focusProject: (name: string, pid: number) => ipcRenderer.send('projects:focus', name, pid),
   stopProject: (pid: number) => ipcRenderer.send('projects:stop', pid),
   reorderProjects: (paths: string[]) => ipcRenderer.send('projects:reorder', paths),
   cascadeWindows: () => ipcRenderer.send('projects:cascade'),

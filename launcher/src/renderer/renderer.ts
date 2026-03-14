@@ -269,7 +269,7 @@ function render(statuses: ProjectStatus[]): void {
     let buttons = '';
     if (s.running && s.pid) {
       buttons = `
-        <button class="btn btn-focus" data-action="focus" data-name="${escAttr(s.name)}" title="Bring to front">Focus</button>
+        <button class="btn btn-focus" data-action="focus" data-name="${escAttr(s.name)}" data-pid="${s.pid}" title="Bring to front">Focus</button>
         <button class="btn btn-stop" data-action="stop" data-pid="${s.pid}" title="Stop orch3">Stop</button>
       `;
     } else {
@@ -295,7 +295,7 @@ function render(statuses: ProjectStatus[]): void {
         const action = (btn as HTMLElement).dataset.action;
         switch (action) {
           case 'focus':
-            api.focusProject((btn as HTMLElement).dataset.name!);
+            api.focusProject((btn as HTMLElement).dataset.name!, Number((btn as HTMLElement).dataset.pid));
             break;
           case 'stop':
             api.stopProject(Number((btn as HTMLElement).dataset.pid));
