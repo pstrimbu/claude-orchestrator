@@ -65,6 +65,7 @@ api.onPtyData((data) => {
 // --- Resize ---
 let lastContainerWidth = 0;
 let lastContainerHeight = 0;
+let resizeTimer: number | null = null;
 
 function doFit(): void {
   const w = container.clientWidth;
@@ -81,7 +82,11 @@ function doFit(): void {
   }
 }
 
-const resizeObserver = new ResizeObserver(() => doFit());
+// Debounce resize to avoid scroll jumps during rapid output
+const resizeObserver = new ResizeObserver(() => {
+  if (resizeTimer) clearTimeout(resizeTimer);
+  resizeTimer = window.setTimeout(() => doFit(), 100);
+});
 resizeObserver.observe(container);
 
 // --- Hotkeys ---

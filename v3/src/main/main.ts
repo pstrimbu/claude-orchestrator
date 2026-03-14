@@ -132,7 +132,11 @@ function createWindow(): void {
 
   // Initialize services
   config = new Config(projectPath);
-  win.setTitle(`orch3 - ${config.projectName}`);
+
+  // Set title after page loads (HTML <title> overrides BrowserWindow title)
+  win.webContents.on('did-finish-load', () => {
+    win.setTitle(`orch3 - ${config.projectName}`);
+  });
   clockify = new ClockifyService(config);
   tracker = createTracker(config);
   history = new CommandHistoryService(join(projectPath, '.orch'));
