@@ -7,12 +7,15 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body class="collapsed">
-  <!-- Collapsed: thin strip of dots -->
+  <!-- Collapsed: two dot strips side by side -->
   <div id="collapsed-view">
-    <div id="dot-strip"></div>
+    <div id="dot-strips">
+      <div id="dot-strip"></div>
+      <div id="dot-strip-portals"></div>
+    </div>
   </div>
 
-  <!-- Expanded: full project list -->
+  <!-- Expanded: full view with tabs -->
   <div id="expanded-view">
     <div id="titlebar">
       <span class="title">orch3</span>
@@ -21,7 +24,14 @@
         <button id="add-btn" title="Add project">+</button>
       </div>
     </div>
-    <div id="project-list"></div>
+    <div id="tab-bar">
+      <button class="tab active" data-tab="projects">Sessions</button>
+      <button class="tab" data-tab="portals">Portals</button>
+    </div>
+    <div id="tab-content">
+      <div id="project-list" class="tab-panel active"></div>
+      <div id="portal-list" class="tab-panel"></div>
+    </div>
   </div>
   <script src="renderer.js"></script>
 </body>

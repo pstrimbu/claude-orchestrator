@@ -1,10 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 contextBridge.exposeInMainWorld('launcherApi', {
+  // Projects
   addProject: () => ipcRenderer.invoke('projects:add'),
   removeProject: (path: string) => ipcRenderer.send('projects:remove', path),
   openProject: (path: string) => ipcRenderer.send('projects:open', path),
-  focusProject: (pid: number) => ipcRenderer.send('projects:focus', pid),
+  focusProject: (name: string) => ipcRenderer.send('projects:focus', name),
   stopProject: (pid: number) => ipcRenderer.send('projects:stop', pid),
   reorderProjects: (paths: string[]) => ipcRenderer.send('projects:reorder', paths),
   cascadeWindows: () => ipcRenderer.send('projects:cascade'),
@@ -15,5 +16,15 @@ contextBridge.exposeInMainWorld('launcherApi', {
   },
   onExpanded: (cb: (expanded: boolean) => void) => {
     ipcRenderer.on('expanded', (_e, val) => cb(val));
+  },
+
+  // Portals
+  startPortal: (path: string, startCmd: string) => ipcRenderer.send('portals:start', path, startCmd),
+  stopPortal: (port: number) => ipcRenderer.send('portals:stop', port),
+  getAllPortalEntries: () => ipcRenderer.invoke('portals:getAllEntries'),
+  setPortalVisibility: (name: string, visible: boolean) => ipcRenderer.send('portals:setVisibility', name, visible),
+  openUrl: (url: string) => ipcRenderer.send('app:open-url', url),
+  onPortalsUpdate: (cb: (statuses: any[]) => void) => {
+    ipcRenderer.on('portals:update', (_e, data) => cb(data));
   },
 });

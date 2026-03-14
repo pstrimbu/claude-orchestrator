@@ -119,7 +119,7 @@ function createWindow(): void {
   win = new BrowserWindow({
     width: 1200,
     height: 800,
-    title: 'orch3',
+    title: `orch3 - ${config.projectName}`,
     backgroundColor: '#1e1e1e',
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
