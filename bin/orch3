@@ -118,7 +118,8 @@ if [ "$USE_DEV" = true ]; then
   fi
 fi
 
-# Run with Electron — detach so closing the terminal doesn't kill orch3
+# Run with Electron — launch directly in background
+# Use & (not nohup) to keep macOS window server registration
 ELECTRON="$V3_DIR/node_modules/.bin/electron"
-nohup "$ELECTRON" "$V3_DIR" "$PROJECT_PATH" ${ARGS[@]+"${ARGS[@]}"} >/dev/null 2>&1 &
+"$ELECTRON" "$V3_DIR" "$PROJECT_PATH" ${ARGS[@]+"${ARGS[@]}"} >/dev/null 2>&1 &
 disown
