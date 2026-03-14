@@ -119,7 +119,7 @@ function createWindow(): void {
   win = new BrowserWindow({
     width: 1200,
     height: 800,
-    title: 'orch3',
+    // title set dynamically by renderer via document.title
     backgroundColor: '#1e1e1e',
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
@@ -133,10 +133,7 @@ function createWindow(): void {
   // Initialize services
   config = new Config(projectPath);
 
-  // Set title after page loads (HTML <title> overrides BrowserWindow title)
-  win.webContents.on('did-finish-load', () => {
-    win.setTitle(`orch3 - ${config.projectName}`);
-  });
+  // Title is set in sendStatusUpdate() after config is available
   clockify = new ClockifyService(config);
   tracker = createTracker(config);
   history = new CommandHistoryService(join(projectPath, '.orch'));
@@ -267,6 +264,7 @@ function pollGitInfo(): void {
 
 function sendStatusUpdate(): void {
   if (win.isDestroyed()) return;
+  win.setTitle(`orch3 - ${config.projectName}`);
   const data: StatusBarData = {
     claudeActive: (Date.now() - lastPtyOutputTime) < 2000,
     projectName: config.projectName,
