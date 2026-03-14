@@ -119,7 +119,7 @@ function createWindow(): void {
   win = new BrowserWindow({
     width: 1200,
     height: 800,
-    title: `orch3 - ${config.projectName}`,
+    title: 'orch3',
     backgroundColor: '#1e1e1e',
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
@@ -132,6 +132,7 @@ function createWindow(): void {
 
   // Initialize services
   config = new Config(projectPath);
+  win.setTitle(`orch3 - ${config.projectName}`);
   clockify = new ClockifyService(config);
   tracker = createTracker(config);
   history = new CommandHistoryService(join(projectPath, '.orch'));
@@ -394,6 +395,11 @@ function setupIpc(): void {
 }
 
 // --- App lifecycle ---
+// Set process name so macOS shows "orch3-projectname" instead of "Electron"
+const appName = `orch3-${projectPath.split('/').pop()}`;
+app.setName(appName);
+process.title = appName;
+
 app.whenReady().then(() => {
   console.log('[orch3] app ready');
   setupIpc();
