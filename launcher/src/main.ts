@@ -197,18 +197,9 @@ function cascadeWindows(): void {
 
   const maxOffset = 80;
 
-  // Get window size of first window to position bottom edge at dock
-  let winW = 1200;
-  let winH = 800;
-  try {
-    const sizeStr = execSync(
-      `osascript -e 'tell application "System Events" to get size of window 1 of (first process whose unix id is ${running[0]!.pid})'`,
-      { encoding: 'utf-8' },
-    ).trim();
-    const parts = sizeStr.split(',');
-    winW = parseInt(parts[0]!.trim(), 10) || 1200;
-    winH = parseInt(parts[1]!.trim(), 10) || 800;
-  } catch { /* use default */ }
+  // Use default window size for position calculations
+  const winW = 1200;
+  const winH = 800;
 
   // Position so bottom of first window abuts the dock
   const baseX = Math.round((screenW - winW) / 2);
@@ -219,24 +210,28 @@ function cascadeWindows(): void {
   const gaps = running.length - 1;
   const offset = gaps > 0 ? Math.min(maxOffset, Math.floor(availableY / gaps)) : 0;
 
-  // Build a single osascript — last-to-first so first ends up on top
-  const commands: string[] = [];
+  // Write position commands and signal each orch3 instance via SIGUSR2
+  // Process last-to-first so first ends up on top
   for (let i = running.length - 1; i >= 0; i--) {
     const s = running[i]!;
     const x = baseX + offset * i;
     const y = baseY - offset * i;
-    commands.push(
-      `set position of window 1 of (first process whose unix id is ${s.pid}) to {${x}, ${y}}`,
-      `set frontmost of (first process whose unix id is ${s.pid}) to true`,
-    );
+    try {
+      const orchDir = join(s.path, '.orch');
+      mkdirSync(orchDir, { recursive: true });
+      writeFileSync(
+        join(orchDir, 'window-cmd.json'),
+        JSON.stringify({ x, y, focus: i === 0 }),
+      );
+      process.kill(s.pid!, 'SIGUSR2');
+    } catch { /* best effort */ }
   }
-
-  const script = `tell application "System Events"\n${commands.join('\n')}\nend tell`;
-  try {
-    execSync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`);
-  } catch (e) {
-    console.error('[launcher] cascade failed:', e);
-  }
+  // Small delay then focus the first window
+  setTimeout(() => {
+    if (running[0]?.pid) {
+      try { process.kill(running[0].pid, 'SIGUSR1'); } catch { /* */ }
+    }
+  }, 500);
 }
 
 // --- Portal start/stop ---

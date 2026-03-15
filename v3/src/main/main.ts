@@ -410,6 +410,25 @@ process.on('SIGUSR1', () => {
   }
 });
 
+// Move/resize window when receiving SIGUSR2 (used by launcher for cascade)
+process.on('SIGUSR2', () => {
+  try {
+    const cmdPath = join(projectPath, '.orch', 'window-cmd.json');
+    if (existsSync(cmdPath)) {
+      const cmd = JSON.parse(readFileSync(cmdPath, 'utf-8'));
+      if (win && !win.isDestroyed() && cmd.x !== undefined && cmd.y !== undefined) {
+        win.setPosition(cmd.x, cmd.y);
+        if (cmd.focus) {
+          win.show();
+          win.focus();
+        }
+      }
+      const { unlinkSync } = require('fs');
+      unlinkSync(cmdPath);
+    }
+  } catch { /* best effort */ }
+});
+
 app.whenReady().then(() => {
   console.log('[orch3] app ready');
   setupIpc();
