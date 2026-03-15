@@ -75,8 +75,15 @@ function doFit(): void {
   lastContainerHeight = h;
 
   const wasAtBottom = term.buffer.active.viewportY >= term.buffer.active.baseY;
+  const savedViewportY = term.buffer.active.viewportY;
   fitAddon.fit();
-  if (wasAtBottom) term.scrollToBottom();
+  if (wasAtBottom) {
+    term.scrollToBottom();
+  } else {
+    // Restore scroll position — clamp to new baseY in case buffer shrank
+    const maxY = term.buffer.active.baseY;
+    term.scrollToLine(Math.min(savedViewportY, maxY));
+  }
   if (term.cols > 0 && term.rows > 0) {
     api.sendPtyResize(term.cols, term.rows);
   }
