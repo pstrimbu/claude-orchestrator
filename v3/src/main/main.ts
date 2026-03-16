@@ -217,9 +217,16 @@ function spawnSession(cols: number, rows: number): void {
       stripResetSeqs = false;
       data = data
         .replace(/\x1bc/g, '\x1b[!p\x1b[2J\x1b[H') // RIS → soft reset + clear screen (preserves scrollback)
-        .replace(/\x1b\[3J/g, '')                     // strip clear-scrollback
-        .replace(/\x1b\[\?1049h/g, '');               // strip alternate screen switch
+        .replace(/\x1b\[3J/g, '');                     // strip clear-scrollback
     }
+    // Always suppress alternate screen buffer switching — Claude Code uses it
+    // for its status UI, but orch3 has its own status bar. Switching to alternate
+    // screen causes xterm.js to swap to a blank buffer (the "scroll jump to top").
+    data = data
+      .replace(/\x1b\[\?1049h/g, '')   // enter alternate screen
+      .replace(/\x1b\[\?1049l/g, '')   // leave alternate screen
+      .replace(/\x1b\[\?47h/g, '')     // enter alternate screen (old)
+      .replace(/\x1b\[\?47l/g, '');    // leave alternate screen (old)
     appendScrollback(data);
     lastPtyOutputTime = Date.now();
     if (!win.isDestroyed()) {
