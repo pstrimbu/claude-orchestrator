@@ -219,10 +219,12 @@ function spawnSession(cols: number, rows: number): void {
         .replace(/\x1bc/g, '\x1b[!p\x1b[2J\x1b[H') // RIS → soft reset + clear screen (preserves scrollback)
         .replace(/\x1b\[3J/g, '');                     // strip clear-scrollback
     }
-    // Always suppress alternate screen buffer switching — Claude Code uses it
-    // for its status UI, but orch3 has its own status bar. Switching to alternate
-    // screen causes xterm.js to swap to a blank buffer (the "scroll jump to top").
+    // Always suppress sequences that destroy scrollback or swap buffers.
+    // Claude Code redraws its UI with \x1b[2J\x1b[3J\x1b[H (clear screen +
+    // clear scrollback + cursor home) which wipes xterm.js scrollback.
     data = data
+      .replace(/\x1b\[3J/g, '')        // clear scrollback buffer — the main culprit
+      .replace(/\x1b\[2J/g, '')        // clear entire screen
       .replace(/\x1b\[\?1049h/g, '')   // enter alternate screen
       .replace(/\x1b\[\?1049l/g, '')   // leave alternate screen
       .replace(/\x1b\[\?47h/g, '')     // enter alternate screen (old)
