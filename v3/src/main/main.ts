@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import { join, resolve } from 'path';
 import { execSync, spawn } from 'child_process';
-import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
+import { writeFileSync, readFileSync, existsSync, mkdirSync, appendFileSync } from 'fs';
 import { IPC } from '../shared/ipc';
 import type { StatusBarData } from '../shared/ipc';
 import { Config } from './config';
@@ -227,6 +227,24 @@ function spawnSession(cols: number, rows: number): void {
       .replace(/\x1b\[\?1049l/g, '')   // leave alternate screen
       .replace(/\x1b\[\?47h/g, '')     // enter alternate screen (old)
       .replace(/\x1b\[\?47l/g, '');    // leave alternate screen (old)
+
+    // Debug: log ALL escape sequences to a file to diagnose scroll jumping
+    const debugLog = join(projectPath, '.orch', 'pty-debug.log');
+    const escSeqs = data.match(/\x1b[^\x1b]{0,30}/g);
+    if (escSeqs) {
+      const ts = new Date().toISOString().slice(11, 23);
+      const encoded = escSeqs.map(s => {
+        let repr = '';
+        for (let i = 0; i < s.length; i++) {
+          const c = s.charCodeAt(i);
+          if (c < 32 || c === 127) repr += `\\x${c.toString(16).padStart(2, '0')}`;
+          else repr += s[i];
+        }
+        return repr;
+      });
+      appendFileSync(debugLog, `${ts} [${encoded.length} seqs] ${encoded.join(' | ')}\n`);
+    }
+
     appendScrollback(data);
     lastPtyOutputTime = Date.now();
     if (!win.isDestroyed()) {
