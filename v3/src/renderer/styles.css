@@ -262,4 +262,6 @@ body {
 /* Xterm overrides */
 .xterm {
   padding: 4px 0 0 4px;
+  width: 100%;
+  height: 100%;
 }

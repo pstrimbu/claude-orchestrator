@@ -1,17 +1,19 @@
 {
   "name": "orch3-launcher",
-  "version": "0.1.0",
-  "main": "dist/main.js",
+  "version": "0.2.0",
   "scripts": {
-    "build": "tsc && node build-renderer.js",
-    "start": "npm run build && electron ."
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "tauri": "tauri"
   },
   "dependencies": {
-    "electron": "^34.0.0"
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-shell": "^2"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "esbuild": "^0.24.0",
-    "typescript": "^5.7.0"
+    "@tauri-apps/cli": "^2",
+    "typescript": "^5.7.0",
+    "vite": "^6"
   }
 }

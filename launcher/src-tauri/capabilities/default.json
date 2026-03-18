@@ -1,0 +1,21 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for the launcher",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-outer-position",
+    "core:window:allow-outer-size",
+    "core:window:allow-primary-monitor",
+    "core:path:default",
+    "dialog:default",
+    "shell:default",
+    "shell:allow-open"
+  ]
+}

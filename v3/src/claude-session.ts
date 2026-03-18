@@ -1,12 +1,11 @@
 import { EventEmitter } from 'events';
-import { execSync } from 'child_process';
+import { execSync, spawn, type ChildProcess } from 'child_process';
 import { existsSync } from 'fs';
-import * as pty from 'node-pty';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
-export type SessionMode =
-  | { type: 'new' }
-  | { type: 'continue' }
-  | { type: 'resume'; id: string };
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PTY_HELPER = join(__dirname, 'pty-helper.py');
 
 function resolveClaudePath(): string {
   const attempts = [
@@ -34,8 +33,13 @@ function resolveClaudePath(): string {
   throw new Error('Could not find "claude" binary.');
 }
 
+export type SessionMode =
+  | { type: 'new' }
+  | { type: 'continue' }           // --continue: resume most recent
+  | { type: 'resume'; id: string }; // --resume <id>: resume specific session
+
 export class ClaudeSession extends EventEmitter {
-  private proc: pty.IPty | null = null;
+  private proc: ChildProcess | null = null;
   private _lastActivity = Date.now();
   private _running = false;
   private _mode: SessionMode = { type: 'new' };
@@ -57,56 +61,69 @@ export class ClaudeSession extends EventEmitter {
   spawn(): void {
     const claudePath = resolveClaudePath();
 
-    const args = ['--dangerously-skip-permissions'];
+    // Build claude args based on session mode
+    const claudeArgs = ['--dangerously-skip-permissions'];
     switch (this._mode.type) {
       case 'continue':
-        args.push('--continue');
+        claudeArgs.push('--continue');
         break;
       case 'resume':
-        args.push('--resume', this._mode.id);
+        claudeArgs.push('--resume', this._mode.id);
         break;
     }
 
-    // Strip ANTHROPIC_API_KEY so Claude CLI uses the subscription auth
-    // (project .env files may set it for app use, but it shouldn't leak into the CLI)
-    const { ANTHROPIC_API_KEY: _removed, ...cleanEnv } = process.env;
-
-    this.proc = pty.spawn(claudePath, args, {
-      name: 'xterm-256color',
-      cols: this.cols,
-      rows: this.rows,
+    // Use Python pty helper to allocate a real PTY for Claude
+    this.proc = spawn('python3', [
+      PTY_HELPER,
+      String(this.cols),
+      String(this.rows),
+      claudePath,
+      ...claudeArgs,
+    ], {
       cwd: this.projectPath,
       env: {
-        ...cleanEnv,
+        ...process.env,
         TERM: 'xterm-256color',
         COLUMNS: String(this.cols),
         LINES: String(this.rows),
-      } as Record<string, string>,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
 
     this._running = true;
 
-    this.proc.onData((data: string) => {
+    this.proc.stdout?.on('data', (data: Buffer) => {
       this._lastActivity = Date.now();
-      this.emit('data', data);
+      this.emit('data', data.toString());
     });
 
-    this.proc.onExit(({ exitCode }) => {
+    this.proc.stderr?.on('data', (data: Buffer) => {
+      // Forward stderr as well (some Claude output goes here)
+      this._lastActivity = Date.now();
+      this.emit('data', data.toString());
+    });
+
+    this.proc.on('exit', (code) => {
       this._running = false;
-      this.emit('exit', exitCode);
+      this.emit('exit', code ?? 0);
+    });
+
+    this.proc.on('error', (err) => {
+      this._running = false;
+      this.emit('error', err);
+      this.emit('exit', 1);
     });
   }
 
   write(data: string): void {
-    this.proc?.write(data);
+    this.proc?.stdin?.write(data);
   }
 
   resize(cols: number, rows: number): void {
     this.cols = cols;
     this.rows = rows;
-    try {
-      this.proc?.resize(cols, rows);
-    } catch { /* ignore resize errors on dead process */ }
+    // Send resize command via pty-helper stdin protocol
+    this.proc?.stdin?.write(`\x1b]orch-resize;${cols};${rows}\x07`);
   }
 
   get running(): boolean {
@@ -124,7 +141,7 @@ export class ClaudeSession extends EventEmitter {
   kill(): void {
     if (this.proc) {
       this._running = false;
-      this.proc.kill();
+      this.proc.kill('SIGTERM');
       this.proc = null;
     }
   }

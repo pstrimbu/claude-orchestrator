@@ -1,18 +1,21 @@
-import { app, BrowserWindow, ipcMain, dialog, screen, shell } from 'electron';
-import { join } from 'path';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { execSync, spawn } from 'child_process';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { homeDir } from '@tauri-apps/api/path';
+import { open } from '@tauri-apps/plugin-dialog';
+import { open as shellOpen } from '@tauri-apps/plugin-shell';
 
-interface ProjectEntry {
-  path: string;
+interface AppStatus {
   name: string;
-}
-
-interface ProjectStatus {
-  path: string;
-  name: string;
-  running: boolean;
-  pid: number | null;
+  sessionPath: string | null;
+  sessionRunning: boolean;
+  sessionPid: number | null;
+  portalName: string | null;
+  uiPort: number | null;
+  apiPort: number | null;
+  portalPath: string | null;
+  portalStartCmd: string | null;
+  uiRunning: boolean;
+  apiRunning: boolean;
 }
 
 interface PortalEntry {
@@ -20,429 +23,294 @@ interface PortalEntry {
   uiPort: number;
   apiPort: number;
   path: string;
-  startCmd: string;
   visible: boolean;
 }
 
-interface PortalStatus {
-  name: string;
-  uiPort: number;
-  apiPort: number;
-  path: string;
-  startCmd: string;
-  uiRunning: boolean;
-  apiRunning: boolean;
+const listEl = document.getElementById('app-list')!;
+const addBtn = document.getElementById('add-btn')!;
+const cascadeBtn = document.getElementById('cascade-btn')!;
+const addPortalBtn = document.getElementById('add-portal-btn')!;
+const dotStrip = document.getElementById('dot-strip')!;
+
+// --- Add project via native dialog ---
+addBtn.addEventListener('click', async () => {
+  const home = await homeDir();
+  const dir = await open({
+    directory: true,
+    multiple: false,
+    defaultPath: `${home}/dev`,
+  });
+  if (dir) {
+    await invoke('add_project', { path: dir });
+  }
+});
+
+cascadeBtn.addEventListener('click', () => invoke('cascade_windows'));
+
+// Hover expand/collapse is handled natively by Rust via CoreGraphics mouse polling
+// (macOS WebViews don't receive mouse events when the window is unfocused)
+
+// --- Listen for backend events ---
+let currentApps: AppStatus[] = [];
+let dragSrcIdx: number | null = null;
+let showingAddPortal = false;
+
+listen<AppStatus[]>('apps-update', (event) => {
+  currentApps = event.payload;
+  renderDots(currentApps);
+  render(currentApps);
+});
+
+listen<boolean>('expanded', (event) => {
+  document.body.classList.toggle('expanded', event.payload);
+  document.body.classList.toggle('collapsed', !event.payload);
+});
+
+// Signal the backend to show the window once CSS has painted
+requestAnimationFrame(() => {
+  requestAnimationFrame(() => {
+    invoke('show_window');
+  });
+});
+
+// --- Dot strip (collapsed view) ---
+function renderDots(apps: AppStatus[]): void {
+  dotStrip.innerHTML = '';
+  apps.forEach((a) => {
+    const hasSession = a.sessionPath !== null;
+    const hasPortal = a.portalName !== null;
+    const portalRunning = a.uiRunning || a.apiRunning;
+
+    if (hasSession && hasPortal) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'dot-pair';
+      wrapper.title = a.name;
+      const sDot = document.createElement('div');
+      sDot.className = `strip-dot-half ${a.sessionRunning ? 'running' : 'stopped'}`;
+      const pDot = document.createElement('div');
+      pDot.className = `strip-dot-half ${portalRunning ? 'running' : 'stopped'}`;
+      wrapper.appendChild(sDot);
+      wrapper.appendChild(pDot);
+      dotStrip.appendChild(wrapper);
+    } else {
+      const dot = document.createElement('div');
+      dot.className = `strip-dot ${(hasSession ? a.sessionRunning : portalRunning) ? 'running' : 'stopped'}`;
+      dot.title = a.name;
+      dotStrip.appendChild(dot);
+    }
+  });
 }
 
-// --- Config ---
-const CONFIG_DIR = join(app.getPath('home'), '.config', 'orch3');
-const CONFIG_FILE = join(CONFIG_DIR, 'launcher-projects.json');
-const PORTALS_CONFIG_FILE = join(CONFIG_DIR, 'launcher-portals.json');
-const PORTS_CSV = join(app.getPath('home'), 'dev', 'dev-application-ports.csv');
+// --- Add portal picker ---
+addPortalBtn.addEventListener('click', async () => {
+  showingAddPortal = true;
+  const entries: PortalEntry[] = await invoke('get_all_portal_entries');
+  const hidden = entries.filter(e => !e.visible);
 
-function loadProjects(): ProjectEntry[] {
-  if (!existsSync(CONFIG_FILE)) return [];
-  try {
-    const data = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'));
-    return data.projects || [];
-  } catch { return []; }
-}
+  if (hidden.length === 0) {
+    showingAddPortal = false;
+    return;
+  }
 
-function saveProjects(projects: ProjectEntry[]): void {
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG_FILE, JSON.stringify({ projects }, null, 2));
-}
+  listEl.innerHTML = '';
+  hidden.forEach(entry => {
+    const row = document.createElement('div');
+    row.className = 'app-row';
+    row.innerHTML = `
+      <div class="app-info">
+        <span class="app-name">${escHtml(entry.name)}</span>
+      </div>
+      <div class="app-actions">
+        <button class="btn btn-open">Add</button>
+      </div>
+    `;
+    row.querySelector('button')!.addEventListener('click', () => {
+      invoke('set_portal_visibility', { name: entry.name, visible: true });
+      showingAddPortal = false;
+    });
+    listEl.appendChild(row);
+  });
+});
 
-// --- Portals ---
-function loadPortsCsv(): { name: string; uiPort: number; apiPort: number; dir: string; startCmd: string }[] {
-  if (!existsSync(PORTS_CSV)) return [];
-  try {
-    const lines = readFileSync(PORTS_CSV, 'utf-8').trim().split('\n');
-    // Header: project,ui,api,db,redis,debug,dir,startCmd
-    return lines.slice(1).filter(l => l.trim()).map(line => {
-      const parts = line.split(',');
-      return {
-        name: parts[0]!.trim(),
-        uiPort: parseInt(parts[1]!.trim(), 10),
-        apiPort: parseInt(parts[2]!.trim(), 10),
-        dir: parts[6]?.trim() || parts[0]!.trim(),
-        startCmd: parts[7]?.trim() || 'npm run dev',
-      };
-    }).filter(p => p.uiPort > 0 && p.apiPort > 0);
-  } catch { return []; }
-}
+// --- Expanded list rendering ---
+function render(apps: AppStatus[]): void {
+  if (showingAddPortal) return;
+  listEl.innerHTML = '';
 
-function loadPortalsConfig(): { hidden: string[] } {
-  if (!existsSync(PORTALS_CONFIG_FILE)) return { hidden: [] };
-  try {
-    return JSON.parse(readFileSync(PORTALS_CONFIG_FILE, 'utf-8'));
-  } catch { return { hidden: [] }; }
-}
+  if (apps.length === 0) {
+    listEl.innerHTML = '<div class="empty">Click + to add a project</div>';
+    return;
+  }
 
-function savePortalsConfig(cfg: { hidden: string[] }): void {
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(PORTALS_CONFIG_FILE, JSON.stringify(cfg, null, 2));
-}
+  apps.forEach((a, idx) => {
+    const row = document.createElement('div');
+    row.className = 'app-row';
+    if (a.sessionPath) {
+      row.draggable = true;
+      row.dataset.idx = String(idx);
+      row.dataset.path = a.sessionPath;
+    }
 
-function isPortListening(port: number): boolean {
-  try {
-    const out = execSync(`lsof -iTCP:${port} -sTCP:LISTEN -P -n 2>/dev/null | grep -c LISTEN`, {
-      encoding: 'utf-8',
-    }).trim();
-    return parseInt(out, 10) > 0;
-  } catch { return false; }
-}
+    const hasSession = a.sessionPath !== null;
+    const hasPortal = a.portalName !== null;
+    const portalRunning = a.uiRunning || a.apiRunning;
 
-function getPortalEntries(): PortalEntry[] {
-  const csvPortals = loadPortsCsv();
-  const cfg = loadPortalsConfig();
-  return csvPortals.map(p => ({
-    name: p.name,
-    uiPort: p.uiPort,
-    apiPort: p.apiPort,
-    path: join(app.getPath('home'), 'dev', p.dir),
-    startCmd: p.startCmd,
-    visible: !cfg.hidden.includes(p.name),
-  }));
-}
+    // Status dot
+    let dotHtml: string;
+    if (hasSession) {
+      dotHtml = `<span class="dot ${a.sessionRunning ? 'running' : 'stopped'}"></span>`;
+    } else {
+      dotHtml = `<span class="dot ${portalRunning ? 'running' : 'stopped'}"></span>`;
+    }
 
-function getPortalStatuses(): PortalStatus[] {
-  const entries = getPortalEntries();
-  return entries.filter(e => e.visible).map(e => ({
-    name: e.name,
-    uiPort: e.uiPort,
-    apiPort: e.apiPort,
-    path: e.path,
-    startCmd: e.startCmd,
-    uiRunning: isPortListening(e.uiPort),
-    apiRunning: isPortListening(e.apiPort),
-  }));
-}
+    // Port badges — fixed columns in app-actions area
+    let uiCol = '<span class="btn-placeholder port-col"></span>';
+    let apiCol = '<span class="btn-placeholder port-col"></span>';
+    if (hasPortal && a.uiPort !== null && a.apiPort !== null) {
+      uiCol = a.uiRunning
+        ? `<span class="port-badge running clickable" data-port="${a.uiPort}" title="Open in browser">UI:${a.uiPort}</span>`
+        : `<span class="port-badge stopped">UI:${a.uiPort}</span>`;
+      apiCol = a.apiRunning
+        ? `<span class="port-badge running clickable" data-port="${a.apiPort}" title="Open in browser">API:${a.apiPort}</span>`
+        : `<span class="port-badge stopped">API:${a.apiPort}</span>`;
+    }
 
-// --- Process detection ---
-function getRunningPid(projectPath: string): number | null {
-  // Check PID file first
-  const pidFile = join(projectPath, '.orch', 'orch3.pid');
-  if (existsSync(pidFile)) {
-    try {
-      const pid = parseInt(readFileSync(pidFile, 'utf-8').trim(), 10);
-      if (pid > 0) {
-        // Verify process is alive
-        process.kill(pid, 0);
-        return pid;
+    // Action buttons — fixed column slots: [open/focus] [stop/port] [remove]
+    // Column 1: Open (not running) or Focus (running)
+    // Column 2: Port (portal) or Stop (running session, no portal)
+    // When running session + portal: Focus, Stop+Port both in col 2 area
+    let openSlot = '';
+    let portSlot = '';
+    let stopBtn = '';
+    let removeBtn = '';
+
+    if (hasSession) {
+      if (a.sessionRunning && a.sessionPid) {
+        openSlot = `<button class="btn btn-focus" data-action="focus" data-pid="${a.sessionPid}" title="Bring to front">Focus</button>`;
+        stopBtn = `<button class="btn btn-stop" data-action="stop-session" data-pid="${a.sessionPid}" title="Stop orch3">Stop</button>`;
+      } else {
+        openSlot = `<button class="btn btn-open" data-action="open-session" data-path="${escAttr(a.sessionPath!)}" title="Launch orch3">Open</button>`;
       }
-    } catch { /* process dead or bad PID file */ }
-  }
-
-  // Fallback: parse ps (process.title is set to orch3-projectname)
-  try {
-    const projName = projectPath.split('/').pop();
-    const out = execSync(
-      `ps axo pid,command | grep -E 'orch3-${projName}|Electron.*${projectPath}' | grep -v grep | grep -v Helper | head -1`,
-      { encoding: 'utf-8' },
-    ).trim();
-    if (out) {
-      const pid = parseInt(out.trim().split(/\s+/)[0]!, 10);
-      if (pid > 0) return pid;
+    } else if (hasPortal && a.portalPath) {
+      openSlot = `<button class="btn btn-open" data-action="open-session" data-path="${escAttr(a.portalPath)}" title="Launch orch3">Open</button>`;
     }
-  } catch { /* no match */ }
-
-  return null;
-}
-
-function getStatuses(projects: ProjectEntry[]): ProjectStatus[] {
-  return projects.map((p) => {
-    const pid = getRunningPid(p.path);
-    return { ...p, running: pid !== null, pid };
-  });
-}
-
-function focusWindow(_projectName: string, pid: number | null): void {
-  if (!pid) return;
-  try {
-    // Send SIGUSR1 to the orch3 process — it will call win.show() + win.focus()
-    process.kill(pid, 'SIGUSR1');
-  } catch (e) {
-    console.error('[launcher] focus failed:', e);
-  }
-}
-
-function openProject(projectPath: string): void {
-  const child = spawn('orch3', [projectPath, '--continue'], {
-    detached: true,
-    stdio: 'ignore',
-    shell: true,
-    cwd: projectPath,
-  });
-  child.unref();
-}
-
-function stopProject(pid: number): void {
-  try {
-    process.kill(pid, 'SIGTERM');
-  } catch { /* already dead */ }
-}
-
-function cascadeWindows(): void {
-  const statuses = getStatuses(projects);
-  const running = statuses.filter((s) => s.running && s.pid);
-  if (running.length === 0) return;
-
-  // Sort alphabetically by project name
-  running.sort((a, b) => a.name.localeCompare(b.name));
-
-  const display = screen.getPrimaryDisplay();
-  const { width: screenW, height: screenH } = display.workAreaSize;
-  const workAreaTop = display.workArea.y;
-
-  const maxOffset = 80;
-
-  // Use default window size for position calculations
-  const winW = 1200;
-  const winH = 800;
-
-  // Position so bottom of first window abuts the dock
-  const baseX = Math.round((screenW - winW) / 2);
-  const baseY = workAreaTop + screenH - winH;
-
-  // Calculate spacing so all windows fit — same offset for both axes (diagonal)
-  const availableY = baseY - workAreaTop;
-  const gaps = running.length - 1;
-  const offset = gaps > 0 ? Math.min(maxOffset, Math.floor(availableY / gaps)) : 0;
-
-  // Write position commands and signal each orch3 instance via SIGUSR2
-  // Process last-to-first so first ends up on top
-  for (let i = running.length - 1; i >= 0; i--) {
-    const s = running[i]!;
-    const x = baseX + offset * i;
-    const y = baseY - offset * i;
-    try {
-      const orchDir = join(s.path, '.orch');
-      mkdirSync(orchDir, { recursive: true });
-      writeFileSync(
-        join(orchDir, 'window-cmd.json'),
-        JSON.stringify({ x, y, focus: i === 0 }),
-      );
-      process.kill(s.pid!, 'SIGUSR2');
-    } catch { /* best effort */ }
-  }
-  // Small delay then focus the first window
-  setTimeout(() => {
-    if (running[0]?.pid) {
-      try { process.kill(running[0].pid, 'SIGUSR1'); } catch { /* */ }
+    if (hasPortal && a.portalPath) {
+      if (portalRunning) {
+        portSlot = `<button class="btn btn-stop" data-action="stop-portal" data-ui-port="${a.uiPort}" data-api-port="${a.apiPort}" title="Stop portal">Port</button>`;
+      } else {
+        portSlot = `<button class="btn btn-open" data-action="start-portal" data-path="${escAttr(a.portalPath)}" data-start-cmd="${escAttr(a.portalStartCmd!)}" title="${escAttr(a.portalStartCmd!)}">Port</button>`;
+      }
     }
-  }, 500);
-}
+    if (hasSession) {
+      removeBtn = `<button class="btn btn-remove" data-action="remove" data-path="${escAttr(a.sessionPath!)}" title="Remove from list">&times;</button>`;
+    } else if (hasPortal) {
+      removeBtn = `<button class="btn btn-remove" data-action="archive-portal" data-name="${escAttr(a.portalName!)}" title="Hide portal">&times;</button>`;
+    }
 
-// --- Portal start/stop ---
-function startPortal(portalPath: string, startCmd: string): void {
-  const child = spawn(startCmd, {
-    detached: true,
-    stdio: 'ignore',
-    shell: true,
-    cwd: portalPath,
-  });
-  child.unref();
-}
+    // Use invisible placeholders to keep columns aligned
+    const openCol = openSlot || '<span class="btn-placeholder"></span>';
+    const portCol = (stopBtn + portSlot) || '<span class="btn-placeholder"></span>';
+    const buttons = uiCol + apiCol + openCol + portCol + removeBtn;
 
-function stopPortal(port: number): void {
-  try {
-    const out = execSync(`lsof -iTCP:${port} -sTCP:LISTEN -P -n -t 2>/dev/null`, {
-      encoding: 'utf-8',
-    }).trim();
-    if (out) {
-      out.split('\n').forEach(pid => {
-        try { process.kill(parseInt(pid, 10), 'SIGTERM'); } catch { /* */ }
+    row.innerHTML = `
+      <div class="app-info">
+        ${dotHtml}
+        <span class="app-name">${escHtml(a.name)}</span>
+      </div>
+      <div class="app-actions">${buttons}</div>
+    `;
+
+    // Port badge clicks
+    row.querySelectorAll('.port-badge.clickable').forEach(badge => {
+      badge.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const port = (badge as HTMLElement).dataset.port;
+        shellOpen(`http://localhost:${port}`);
+      });
+    });
+
+    // Button clicks
+    row.querySelectorAll('button').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const el = btn as HTMLElement;
+        const action = el.dataset.action;
+        switch (action) {
+          case 'focus':
+            invoke('focus_project', { pid: Number(el.dataset.pid) });
+            break;
+          case 'stop-session':
+            invoke('stop_project', { pid: Number(el.dataset.pid) });
+            break;
+          case 'open-session':
+            invoke('open_project', { path: el.dataset.path });
+            el.textContent = 'Starting...';
+            el.classList.add('disabled');
+            break;
+          case 'start-portal':
+            invoke('start_portal', { path: el.dataset.path, startCmd: el.dataset.startCmd });
+            el.textContent = '...';
+            el.classList.add('disabled');
+            break;
+          case 'stop-portal':
+            invoke('stop_portal', { port: Number(el.dataset.uiPort) });
+            invoke('stop_portal', { port: Number(el.dataset.apiPort) });
+            el.textContent = '...';
+            el.classList.add('disabled');
+            break;
+          case 'remove':
+            invoke('remove_project', { path: el.dataset.path });
+            break;
+          case 'archive-portal':
+            invoke('set_portal_visibility', { name: el.dataset.name, visible: false });
+            break;
+        }
+      });
+    });
+
+    // Drag-and-drop reorder
+    if (a.sessionPath) {
+      row.addEventListener('dragstart', (e) => {
+        dragSrcIdx = idx;
+        row.classList.add('dragging');
+        e.dataTransfer!.effectAllowed = 'move';
+      });
+
+      row.addEventListener('dragend', () => {
+        row.classList.remove('dragging');
+        dragSrcIdx = null;
+        listEl.querySelectorAll('.drag-over').forEach((el) => el.classList.remove('drag-over'));
+      });
+
+      row.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer!.dropEffect = 'move';
+        row.classList.add('drag-over');
+      });
+
+      row.addEventListener('dragleave', () => {
+        row.classList.remove('drag-over');
+      });
+
+      row.addEventListener('drop', (e) => {
+        e.preventDefault();
+        row.classList.remove('drag-over');
+        if (dragSrcIdx === null || dragSrcIdx === idx) return;
+        const paths = currentApps.filter(a => a.sessionPath).map(a => a.sessionPath!);
+        const [moved] = paths.splice(dragSrcIdx, 1);
+        paths.splice(idx, 0, moved!);
+        invoke('reorder_projects', { paths });
       });
     }
-  } catch { /* nothing listening */ }
+
+    listEl.appendChild(row);
+  });
 }
 
-// --- Window ---
-let win: BrowserWindow;
-let pollInterval: ReturnType<typeof setInterval> | null = null;
-let projects: ProjectEntry[] = [];
-
-const COLLAPSED_WIDTH = 40;
-const EXPANDED_WIDTH = 300;
-let expanded = false;
-
-function createWindow(): void {
-  const display = screen.getPrimaryDisplay();
-  const { width: screenW } = display.workAreaSize;
-
-  win = new BrowserWindow({
-    width: COLLAPSED_WIDTH,
-    height: 400,
-    x: screenW - COLLAPSED_WIDTH,
-    y: 80,
-    minWidth: COLLAPSED_WIDTH,
-    minHeight: 60,
-    maxWidth: EXPANDED_WIDTH,
-    show: false,
-    alwaysOnTop: true,
-    frame: false,
-    transparent: false,
-    backgroundColor: '#1e1e1e',
-    resizable: false,
-    skipTaskbar: true,
-    webPreferences: {
-      preload: join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-    },
-  });
-
-  win.loadFile(join(__dirname, 'renderer', 'index.html'));
-
-  projects = loadProjects();
-
-  win.webContents.on('did-finish-load', () => {
-    // Small delay to ensure renderer JS has registered IPC listeners
-    setTimeout(() => {
-      sendUpdate();
-      win.show();
-    }, 200);
-  });
-
-  pollInterval = setInterval(() => sendUpdate(), 3000);
+function escHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function expandWindow(): void {
-  if (expanded || win.isDestroyed()) return;
-  expanded = true;
-  const [x, y] = win.getPosition();
-  const h = win.getSize()[1];
-  win.setBounds({ x: x - (EXPANDED_WIDTH - COLLAPSED_WIDTH), y, width: EXPANDED_WIDTH, height: h });
-  win.webContents.send('expanded', true);
-}
-
-function collapseWindow(): void {
-  if (!expanded || win.isDestroyed()) return;
-  expanded = false;
-  const [x, y] = win.getPosition();
-  const h = win.getSize()[1];
-  win.setBounds({ x: x + (EXPANDED_WIDTH - COLLAPSED_WIDTH), y, width: COLLAPSED_WIDTH, height: h });
-  win.webContents.send('expanded', false);
-}
-
-function sendUpdate(): void {
-  if (win.isDestroyed()) return;
-  const statuses = getStatuses(projects);
-  win.webContents.send('projects:update', statuses);
-  const portalStatuses = getPortalStatuses();
-  win.webContents.send('portals:update', portalStatuses);
-
-  // Auto-size window to fit content
-  const maxItems = Math.max(statuses.length, portalStatuses.length);
-  const itemHeight = expanded ? 32 : 16; // row height vs dot height
-  const chrome = expanded ? 70 : 16; // titlebar+tabs vs padding
-  const targetH = Math.max(60, Math.min(chrome + maxItems * itemHeight, 600));
-  const [x, y] = win.getPosition();
-  const w = win.getSize()[0];
-  const currentH = win.getSize()[1];
-  if (Math.abs(currentH - targetH) > 10) {
-    win.setBounds({ x, y, width: w, height: targetH });
-  }
-}
-
-// --- IPC: Projects ---
-ipcMain.handle('projects:add', async () => {
-  const result = await dialog.showOpenDialog(win, {
-    properties: ['openDirectory'],
-    defaultPath: join(app.getPath('home'), 'dev'),
-  });
-  if (result.canceled || result.filePaths.length === 0) return;
-  const dirPath = result.filePaths[0]!;
-  const name = dirPath.split('/').pop()!;
-
-  if (projects.some((p) => p.path === dirPath)) return; // already exists
-  projects.push({ path: dirPath, name });
-  saveProjects(projects);
-  sendUpdate();
-});
-
-ipcMain.on('projects:remove', (_e, path: string) => {
-  projects = projects.filter((p) => p.path !== path);
-  saveProjects(projects);
-  sendUpdate();
-});
-
-ipcMain.on('projects:open', (_e, path: string) => {
-  openProject(path);
-  setTimeout(() => sendUpdate(), 2000);
-  setTimeout(() => sendUpdate(), 5000);
-});
-
-ipcMain.on('projects:focus', (_e, name: string, pid: number) => {
-  focusWindow(name, pid);
-});
-
-ipcMain.on('projects:stop', (_e, pid: number) => {
-  stopProject(pid);
-  setTimeout(() => sendUpdate(), 1000);
-});
-
-ipcMain.on('projects:cascade', () => {
-  cascadeWindows();
-});
-
-ipcMain.on('window:expand', () => expandWindow());
-ipcMain.on('window:collapse', () => collapseWindow());
-
-ipcMain.on('projects:reorder', (_e, paths: string[]) => {
-  const byPath = new Map(projects.map((p) => [p.path, p]));
-  projects = paths.map((p) => byPath.get(p)).filter((p): p is ProjectEntry => !!p);
-  saveProjects(projects);
-});
-
-// --- IPC: Portals ---
-ipcMain.on('portals:start', (_e, portalPath: string, startCmd: string) => {
-  startPortal(portalPath, startCmd);
-  setTimeout(() => sendUpdate(), 3000);
-  setTimeout(() => sendUpdate(), 6000);
-});
-
-ipcMain.on('portals:stop', (_e, port: number) => {
-  stopPortal(port);
-  setTimeout(() => sendUpdate(), 1000);
-});
-
-ipcMain.handle('portals:getAllEntries', () => {
-  return getPortalEntries();
-});
-
-ipcMain.on('portals:setVisibility', (_e, name: string, visible: boolean) => {
-  const cfg = loadPortalsConfig();
-  if (visible) {
-    cfg.hidden = cfg.hidden.filter(n => n !== name);
-  } else {
-    if (!cfg.hidden.includes(name)) cfg.hidden.push(name);
-  }
-  savePortalsConfig(cfg);
-  sendUpdate();
-});
-
-ipcMain.on('app:open-url', (_e, url: string) => {
-  shell.openExternal(url);
-});
-
-// --- Lifecycle ---
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) {
-  app.quit();
-} else {
-  app.on('second-instance', () => {
-    if (win && !win.isDestroyed()) {
-      if (win.isMinimized()) win.restore();
-      win.focus();
-    }
-  });
-
-  app.whenReady().then(createWindow);
-
-  app.on('window-all-closed', () => {
-    if (pollInterval) clearInterval(pollInterval);
-    app.quit();
-  });
+function escAttr(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
 }

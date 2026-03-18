@@ -1,0 +1,31 @@
+{
+  "productName": "orch3-launcher",
+  "identifier": "com.orch3.launcher",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Launcher",
+        "width": 40,
+        "height": 400,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "skipTaskbar": true,
+        "visible": false,
+        "transparent": false,
+        "acceptFirstMouse": true,
+        "backgroundColor": [30, 30, 30, 255]
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}

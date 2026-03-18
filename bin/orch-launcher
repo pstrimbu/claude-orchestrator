@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# orch-launcher — Launch the orch3 project launcher UI
+# orch-launcher — Launch the orch3 project launcher UI (Tauri)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LAUNCHER_DIR="$SCRIPT_DIR/../launcher"
+BINARY="$LAUNCHER_DIR/src-tauri/target/release/orch3-launcher"
 
 # Source orchestrator's .env for shared credentials
 if [ -f "$SCRIPT_DIR/../.env" ]; then
@@ -16,18 +17,12 @@ if [ -f "$SCRIPT_DIR/../.env" ]; then
   done < "$SCRIPT_DIR/../.env"
 fi
 
-# Install deps if needed
-if [ ! -d "$LAUNCHER_DIR/node_modules" ]; then
-  echo "Installing launcher dependencies..."
-  (cd "$LAUNCHER_DIR" && npm install)
-fi
-
 # Build if needed
-if [ ! -d "$LAUNCHER_DIR/dist" ] || [ "$LAUNCHER_DIR/src/main.ts" -nt "$LAUNCHER_DIR/dist/main.js" ]; then
+if [ ! -f "$BINARY" ] || \
+   [ "$LAUNCHER_DIR/src-tauri/src/lib.rs" -nt "$BINARY" ] || \
+   [ "$LAUNCHER_DIR/src/main.ts" -nt "$BINARY" ]; then
   echo "Building launcher..."
-  (cd "$LAUNCHER_DIR" && npm run build)
+  (cd "$LAUNCHER_DIR" && npx tauri build 2>&1)
 fi
 
-# Launch (not detached — it's a persistent UI)
-ELECTRON="$LAUNCHER_DIR/node_modules/.bin/electron"
-exec "$ELECTRON" "$LAUNCHER_DIR"
+exec "$BINARY"

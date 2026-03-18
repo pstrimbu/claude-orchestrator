@@ -5,3 +5,5 @@ node_modules/
 v3/dist/
 v3/src/main/version.ts
 .releases/
+launcher/src-tauri/target/
+launcher/dist/
