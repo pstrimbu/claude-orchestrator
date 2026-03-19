@@ -130,6 +130,18 @@ function createWindow(): void {
 
   win.loadFile(join(__dirname, '..', 'renderer', 'index.html'));
 
+  // Force all external links to open in the default browser
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!url.startsWith('file://')) {
+      event.preventDefault();
+      shell.openExternal(url);
+    }
+  });
+
   // Initialize services
   config = new Config(projectPath);
 

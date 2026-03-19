@@ -158,9 +158,11 @@ function render(apps: AppStatus[]): void {
     // Status dot
     let dotHtml: string;
     if (hasSession) {
-      dotHtml = `<span class="dot ${a.sessionRunning ? 'running' : 'stopped'}"></span>`;
+      const dotTitle = a.sessionRunning ? 'orch3 session running' : 'orch3 session not running';
+      dotHtml = `<span class="dot ${a.sessionRunning ? 'running' : 'stopped'}" title="${dotTitle}"></span>`;
     } else {
-      dotHtml = `<span class="dot ${portalRunning ? 'running' : 'stopped'}"></span>`;
+      const dotTitle = portalRunning ? 'Dev servers running' : 'Dev servers not running';
+      dotHtml = `<span class="dot ${portalRunning ? 'running' : 'stopped'}" title="${dotTitle}"></span>`;
     }
 
     // Port badges — fixed columns in app-actions area
@@ -168,11 +170,11 @@ function render(apps: AppStatus[]): void {
     let apiCol = '<span class="btn-placeholder port-col"></span>';
     if (hasPortal && a.uiPort !== null && a.apiPort !== null) {
       uiCol = a.uiRunning
-        ? `<span class="port-badge running clickable" data-port="${a.uiPort}" title="Open in browser">UI:${a.uiPort}</span>`
-        : `<span class="port-badge stopped">UI:${a.uiPort}</span>`;
+        ? `<span class="port-badge running clickable" data-port="${a.uiPort}" title="Open UI in browser (localhost:${a.uiPort})">UI:${a.uiPort}</span>`
+        : `<span class="port-badge stopped" title="UI server not running (port ${a.uiPort})">UI:${a.uiPort}</span>`;
       apiCol = a.apiRunning
-        ? `<span class="port-badge running clickable" data-port="${a.apiPort}" title="Open in browser">API:${a.apiPort}</span>`
-        : `<span class="port-badge stopped">API:${a.apiPort}</span>`;
+        ? `<span class="port-badge running clickable" data-port="${a.apiPort}" title="Open API in browser (localhost:${a.apiPort})">API:${a.apiPort}</span>`
+        : `<span class="port-badge stopped" title="API server not running (port ${a.apiPort})">API:${a.apiPort}</span>`;
     }
 
     // Action buttons — fixed column slots: [open/focus] [stop/port] [remove]
@@ -186,31 +188,33 @@ function render(apps: AppStatus[]): void {
 
     if (hasSession) {
       if (a.sessionRunning && a.sessionPid) {
-        openSlot = `<button class="btn btn-focus" data-action="focus" data-pid="${a.sessionPid}" title="Bring to front">Focus</button>`;
-        stopBtn = `<button class="btn btn-stop" data-action="stop-session" data-pid="${a.sessionPid}" title="Stop orch3">Stop</button>`;
+        openSlot = `<button class="btn btn-focus" data-action="focus" data-pid="${a.sessionPid}" title="Bring orch3 window to front">Focus</button>`;
+        stopBtn = `<button class="btn btn-stop" data-action="stop-session" data-pid="${a.sessionPid}" title="Stop the orch3 session (SIGTERM)">Stop</button>`;
       } else {
-        openSlot = `<button class="btn btn-open" data-action="open-session" data-path="${escAttr(a.sessionPath!)}" title="Launch orch3">Open</button>`;
+        openSlot = `<button class="btn btn-open" data-action="open-session" data-path="${escAttr(a.sessionPath!)}" title="Launch orch3 with --continue in ${escAttr(a.name)}">Open</button>`;
       }
     } else if (hasPortal && a.portalPath) {
-      openSlot = `<button class="btn btn-open" data-action="open-session" data-path="${escAttr(a.portalPath)}" title="Launch orch3">Open</button>`;
+      openSlot = `<button class="btn btn-open" data-action="open-session" data-path="${escAttr(a.portalPath)}" title="Launch orch3 with --continue in ${escAttr(a.name)}">Open</button>`;
     }
     if (hasPortal && a.portalPath) {
       if (portalRunning) {
-        portSlot = `<button class="btn btn-stop" data-action="stop-portal" data-ui-port="${a.uiPort}" data-api-port="${a.apiPort}" title="Stop portal">Port</button>`;
+        portSlot = `<button class="btn btn-stop" data-action="stop-portal" data-ui-port="${a.uiPort}" data-api-port="${a.apiPort}" title="Stop dev servers (UI:${a.uiPort} API:${a.apiPort})">Port</button>`;
       } else {
-        portSlot = `<button class="btn btn-open" data-action="start-portal" data-path="${escAttr(a.portalPath)}" data-start-cmd="${escAttr(a.portalStartCmd!)}" title="${escAttr(a.portalStartCmd!)}">Port</button>`;
+        portSlot = `<button class="btn btn-open" data-action="start-portal" data-path="${escAttr(a.portalPath)}" data-start-cmd="${escAttr(a.portalStartCmd!)}" title="Start dev servers: ${escAttr(a.portalStartCmd!)}">Port</button>`;
       }
     }
     if (hasSession) {
-      removeBtn = `<button class="btn btn-remove" data-action="remove" data-path="${escAttr(a.sessionPath!)}" title="Remove from list">&times;</button>`;
+      removeBtn = `<button class="btn btn-remove" data-action="remove" data-path="${escAttr(a.sessionPath!)}" title="Remove ${escAttr(a.name)} from launcher">&times;</button>`;
     } else if (hasPortal) {
-      removeBtn = `<button class="btn btn-remove" data-action="archive-portal" data-name="${escAttr(a.portalName!)}" title="Hide portal">&times;</button>`;
+      removeBtn = `<button class="btn btn-remove" data-action="archive-portal" data-name="${escAttr(a.portalName!)}" title="Hide ${escAttr(a.name)} from launcher">&times;</button>`;
     }
 
     // Use invisible placeholders to keep columns aligned
+    // Columns: [UI port] [API port] [Open/Focus] [Stop] [Port] [Remove]
     const openCol = openSlot || '<span class="btn-placeholder"></span>';
-    const portCol = (stopBtn + portSlot) || '<span class="btn-placeholder"></span>';
-    const buttons = uiCol + apiCol + openCol + portCol + removeBtn;
+    const stopCol = stopBtn || '<span class="btn-placeholder"></span>';
+    const portCol = portSlot || '<span class="btn-placeholder"></span>';
+    const buttons = uiCol + apiCol + openCol + stopCol + portCol + removeBtn;
 
     row.innerHTML = `
       <div class="app-info">

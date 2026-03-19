@@ -69,7 +69,7 @@ struct LauncherState {
 }
 
 const COLLAPSED_WIDTH: u32 = 40;
-const EXPANDED_WIDTH: u32 = 420;
+const EXPANDED_WIDTH: u32 = 520;
 const COLLAPSE_DELAY_MS: u64 = 400;
 
 // --- Native mouse position (macOS CoreGraphics) ---
@@ -374,6 +374,7 @@ fn build_app_statuses(projects: &[ProjectEntry]) -> Vec<AppStatus> {
         }
     }
 
+    apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     apps
 }
 

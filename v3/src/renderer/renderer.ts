@@ -48,6 +48,17 @@ term.loadAddon(new WebLinksAddon((_e, url) => {
 const container = document.getElementById('terminal-container')!;
 term.open(container);
 
+// Intercept Shift+Enter to send CSI u sequence (newline in Claude Code)
+term.attachCustomKeyEventHandler((ev: KeyboardEvent) => {
+  if (ev.type === 'keydown' && ev.key === 'Enter' && ev.shiftKey) {
+    if (!overlayVisible) {
+      api.sendPtyInput('\x1b[13;2u');
+    }
+    return false; // prevent xterm default handling
+  }
+  return true;
+});
+
 // --- Wire PTY <-> xterm ---
 term.onData((data) => {
   if (overlayVisible) {
