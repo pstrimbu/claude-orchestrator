@@ -128,6 +128,22 @@ function createWindow(): void {
     },
   });
 
+  // Check for position hint from Cmd+N in another window
+  try {
+    const posPath = join(projectPath, '.orch', 'new-window-pos.json');
+    if (existsSync(posPath)) {
+      const pos = JSON.parse(readFileSync(posPath, 'utf-8'));
+      const { unlinkSync } = require('fs');
+      unlinkSync(posPath);
+      if (pos.x !== undefined && pos.y !== undefined) {
+        win.setPosition(pos.x, pos.y);
+      }
+      if (pos.w && pos.h) {
+        win.setSize(pos.w, pos.h);
+      }
+    }
+  } catch { /* best effort */ }
+
   win.loadFile(join(__dirname, '..', 'renderer', 'index.html'));
 
   // Force all external links to open in the default browser
@@ -394,6 +410,24 @@ function setupIpc(): void {
         });
         child.unref();
         app.exit(0);
+        break;
+      }
+      case 'cmd+n': {
+        // Spawn a new orch window for the same project, offset from current position
+        const pos = win.getPosition();
+        const size = win.getSize();
+        const offsetX = pos[0]! + 30;
+        const offsetY = pos[1]! + 30;
+        // Write a window-cmd so the new instance positions itself near us
+        const cmdPath = join(projectPath, '.orch', 'new-window-pos.json');
+        writeFileSync(cmdPath, JSON.stringify({ x: offsetX, y: offsetY, w: size[0], h: size[1] }));
+        const child = spawn('orch', [projectPath], {
+          detached: true,
+          stdio: 'ignore',
+          cwd: projectPath,
+          shell: true,
+        });
+        child.unref();
         break;
       }
       case 'ctrl+r': {

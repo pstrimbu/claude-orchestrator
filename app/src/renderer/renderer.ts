@@ -56,6 +56,11 @@ term.attachCustomKeyEventHandler((ev: KeyboardEvent) => {
     }
     return false; // prevent xterm default handling
   }
+  // Cmd+N: new window
+  if (ev.type === 'keydown' && ev.key === 'n' && ev.metaKey && !ev.shiftKey && !ev.ctrlKey && !ev.altKey) {
+    api.sendHotkey('cmd+n');
+    return false;
+  }
   return true;
 });
 
