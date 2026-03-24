@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# orch-launcher — Launch the orch3 project launcher UI (Tauri)
+# orch-launcher — Launch the orch3 project launcher UI (native Swift)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LAUNCHER_DIR="$SCRIPT_DIR/../launcher"
-BINARY="$LAUNCHER_DIR/src-tauri/target/release/orch3-launcher"
+LAUNCHER_DIR="$SCRIPT_DIR/../launcher-native"
+BINARY="$LAUNCHER_DIR/orch3-launcher"
 
 # Source orchestrator's .env for shared credentials
 if [ -f "$SCRIPT_DIR/../.env" ]; then
@@ -18,11 +18,23 @@ if [ -f "$SCRIPT_DIR/../.env" ]; then
 fi
 
 # Build if needed
-if [ ! -f "$BINARY" ] || \
-   [ "$LAUNCHER_DIR/src-tauri/src/lib.rs" -nt "$BINARY" ] || \
-   [ "$LAUNCHER_DIR/src/main.ts" -nt "$BINARY" ]; then
+needs_build=false
+if [ ! -f "$BINARY" ]; then
+  needs_build=true
+else
+  # Rebuild if any Swift source is newer than the binary
+  while IFS= read -r src; do
+    if [ "$src" -nt "$BINARY" ]; then
+      needs_build=true
+      break
+    fi
+  done < <(find "$LAUNCHER_DIR/Sources" -name '*.swift')
+fi
+
+if [ "$needs_build" = true ]; then
   echo "Building launcher..."
-  (cd "$LAUNCHER_DIR" && npx tauri build 2>&1)
+  (cd "$LAUNCHER_DIR" && swift build -c release 2>&1)
+  cp "$LAUNCHER_DIR/.build/release/orch3-launcher" "$BINARY"
 fi
 
 exec "$BINARY"

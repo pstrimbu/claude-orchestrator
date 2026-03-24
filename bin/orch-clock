@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-# orch-clock — Thin wrapper for backward compat, delegates to orch-timer
-exec "$(dirname "$0")/orch-timer" "${1:-status}"
