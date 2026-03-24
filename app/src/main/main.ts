@@ -21,8 +21,8 @@ import { showMainMenu } from './overlays/main-menu';
 const rawArgv = process.argv.slice(2); // skip electron binary and app path
 const argv = rawArgv.filter(a => !a.startsWith('--inspect') && !a.startsWith('--remote-debugging'));
 
-console.log('[orch3] argv:', argv);
-console.log('[orch3] cwd:', process.cwd());
+console.log('[orch] argv:', argv);
+console.log('[orch] cwd:', process.cwd());
 
 let projectPath = process.cwd();
 let sessionMode: SessionMode = { type: 'new' };
@@ -46,7 +46,7 @@ for (let i = 0; i < argv.length; i++) {
   }
 }
 projectPath = resolve(projectPath);
-console.log('[orch3] projectPath:', projectPath);
+console.log('[orch] projectPath:', projectPath);
 
 // --- App state ---
 let win: BrowserWindow;
@@ -204,17 +204,17 @@ function createWindow(): void {
 
   // Write PID file so the launcher can detect/focus this instance
   try {
-    writeFileSync(join(config.orchDir, 'orch3.pid'), String(process.pid));
+    writeFileSync(join(config.orchDir, 'orch.pid'), String(process.pid));
   } catch { /* best effort */ }
 
-  console.log('[orch3] config.projectName:', config.projectName);
-  console.log('[orch3] config.projectPath:', config.projectPath);
+  console.log('[orch] config.projectName:', config.projectName);
+  console.log('[orch] config.projectPath:', config.projectPath);
 }
 
 let stripResetSeqs = false;
 
 function spawnSession(cols: number, rows: number): void {
-  console.log('[orch3] spawnSession:', cols, 'x', rows);
+  console.log('[orch] spawnSession:', cols, 'x', rows);
 
   // Ensure reasonable dimensions
   if (cols < 10) cols = 80;
@@ -251,7 +251,7 @@ function spawnSession(cols: number, rows: number): void {
   });
 
   session.on('exit', (code: number) => {
-    console.log('[orch3] session exited:', code);
+    console.log('[orch] session exited:', code);
     if (!win.isDestroyed()) {
       win.webContents.send(IPC.SESSION_EXIT, code);
     }
@@ -259,9 +259,9 @@ function spawnSession(cols: number, rows: number): void {
 
   try {
     session.spawn();
-    console.log('[orch3] session spawned successfully');
+    console.log('[orch] session spawned successfully');
   } catch (err) {
-    console.error('[orch3] Failed to spawn session:', err);
+    console.error('[orch] Failed to spawn session:', err);
   }
 }
 
@@ -286,7 +286,7 @@ function pollGitInfo(): void {
 
 function sendStatusUpdate(): void {
   if (win.isDestroyed()) return;
-  win.setTitle(`orch3 - ${config.projectName}`);
+  win.setTitle(`orch - ${config.projectName}`);
   const data: StatusBarData = {
     claudeActive: (Date.now() - lastPtyOutputTime) < 2000,
     projectName: config.projectName,
@@ -327,12 +327,12 @@ function setupIpc(): void {
   ipcMain.on(IPC.APP_READY, (_e, data: any) => {
     const cols = data?.cols || 80;
     const rows = data?.rows || 24;
-    console.log('[orch3] APP_READY received:', cols, 'x', rows);
+    console.log('[orch] APP_READY received:', cols, 'x', rows);
 
     // Replay saved scrollback from previous session
     const saved = loadScrollback();
     if (saved) {
-      console.log('[orch3] replaying scrollback:', saved.length, 'bytes');
+      console.log('[orch] replaying scrollback:', saved.length, 'bytes');
       scrollbackBuf = saved; // seed the ring buffer so it persists across multiple refreshes
       const clean = sanitizeScrollback(saved);
       if (clean && !win.isDestroyed()) {
@@ -376,7 +376,7 @@ function setupIpc(): void {
   });
 
   ipcMain.on(IPC.HOTKEY, (_e, key: string) => {
-    console.log('[orch3] hotkey:', key);
+    console.log('[orch] hotkey:', key);
     switch (key) {
       case 'f1':
         openMainMenu();
@@ -385,8 +385,8 @@ function setupIpc(): void {
         saveScrollback();
         if (clockify.recording) clockify.flush().catch(() => {});
         session?.kill();
-        // Relaunch via orch3 (on PATH) so it resolves the latest tag
-        const child = spawn('orch3', [projectPath, '--continue'], {
+        // Relaunch via orch (on PATH) so it resolves the latest tag
+        const child = spawn('orch', [projectPath, '--continue'], {
           detached: true,
           stdio: 'ignore',
           cwd: projectPath,
@@ -419,8 +419,8 @@ function setupIpc(): void {
 }
 
 // --- App lifecycle ---
-// Set process name so macOS shows "orch3-projectname" instead of "Electron"
-const appName = `orch3-${projectPath.split('/').pop()}`;
+// Set process name so macOS shows "orch-projectname" instead of "Electron"
+const appName = `orch-${projectPath.split('/').pop()}`;
 app.setName(appName);
 process.title = appName;
 
@@ -452,7 +452,7 @@ process.on('SIGUSR2', () => {
 });
 
 app.whenReady().then(() => {
-  console.log('[orch3] app ready');
+  console.log('[orch] app ready');
   setupIpc();
   createWindow();
 });
@@ -466,7 +466,7 @@ app.on('window-all-closed', () => {
   // Clean up PID file
   try {
     const { unlinkSync } = require('fs');
-    unlinkSync(join(projectPath, '.orch', 'orch3.pid'));
+    unlinkSync(join(projectPath, '.orch', 'orch.pid'));
   } catch { /* best effort */ }
   app.quit();
 });

@@ -83,7 +83,7 @@ async function setupLinear(
       { label: '  1. Get an API key from Linear Settings > API', dimmed: true },
       { label: '  2. Add to your .env file:', dimmed: true },
       { label: '     LINEAR_API_KEY=lin_api_xxxxx', dimmed: true },
-      { label: '  3. Restart orch3', dimmed: true },
+      { label: '  3. Restart orch', dimmed: true },
       { label: '', dimmed: true },
       {
         label: '\u2190 Back',
@@ -291,7 +291,7 @@ function setupJira(
       { label: '', dimmed: true },
       ...missing.map(v => ({ label: `  \u2717 ${v}`, dimmed: true })),
       { label: '', dimmed: true },
-      { label: 'Add these to your .env file and restart orch3', dimmed: true },
+      { label: 'Add these to your .env file and restart orch', dimmed: true },
       { label: '', dimmed: true },
       {
         label: '\u2190 Back',

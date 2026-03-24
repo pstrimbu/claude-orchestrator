@@ -145,7 +145,7 @@ function stepClockify(
     items.push({ label: 'To enable Clockify time tracking:', dimmed: true });
     items.push({ label: '  1. Get API key from clockify.me/user/settings', dimmed: true });
     items.push({ label: '  2. Add CLOCKIFY_API_KEY=xxx to .env', dimmed: true });
-    items.push({ label: '  3. Restart orch3', dimmed: true });
+    items.push({ label: '  3. Restart orch', dimmed: true });
     items.push({ label: '', dimmed: true });
     items.push({
       label: 'Skip Clockify for now \u2014 continue',

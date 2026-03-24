@@ -243,7 +243,7 @@ api.onStatusUpdate((data: StatusBarData) => {
   claudeDot.className = `claude-dot ${data.claudeActive ? 'active' : 'idle'}`;
 
   document.getElementById('status-project-name')!.textContent = data.projectName;
-  document.title = `orch3 - ${data.projectName}`;
+  document.title = `orch - ${data.projectName}`;
   document.getElementById('status-time-value')!.textContent = data.timeElapsed;
 
   const indicator = document.getElementById('status-time-indicator')!;

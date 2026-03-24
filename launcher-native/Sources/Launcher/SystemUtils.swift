@@ -34,7 +34,7 @@ enum SystemUtils {
     /// Get running PID for a project path
     static func getRunningPid(projectPath: String) -> Int32? {
         // Check PID file first
-        let pidFile = (projectPath as NSString).appendingPathComponent(".orch/orch3.pid")
+        let pidFile = (projectPath as NSString).appendingPathComponent(".orch/orch.pid")
         if let content = try? String(contentsOfFile: pidFile, encoding: .utf8),
            let pid = Int32(content.trimmingCharacters(in: .whitespacesAndNewlines)),
            pid > 0, isProcessRunning(pid) {
@@ -43,7 +43,7 @@ enum SystemUtils {
 
         // Fallback: ps
         let projName = (projectPath as NSString).lastPathComponent
-        let cmd = "ps axo pid,command | grep -E 'orch3-\(projName)|Electron.*\(projectPath)' | grep -v grep | grep -v Helper | head -1"
+        let cmd = "ps axo pid,command | grep -E 'orch-\(projName)|Electron.*\(projectPath)' | grep -v grep | grep -v Helper | head -1"
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", cmd]

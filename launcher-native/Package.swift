@@ -2,11 +2,11 @@
 import PackageDescription
 
 let package = Package(
-    name: "orch3-launcher",
+    name: "orch-launcher",
     platforms: [.macOS(.v14)],
     targets: [
         .executableTarget(
-            name: "orch3-launcher",
+            name: "orch-launcher",
             path: "Sources/Launcher",
             swiftSettings: [
                 .unsafeFlags(["-swift-version", "5"])

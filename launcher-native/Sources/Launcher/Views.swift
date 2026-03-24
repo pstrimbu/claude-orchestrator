@@ -94,7 +94,7 @@ struct ExpandedView: View {
         VStack(spacing: 0) {
             // Titlebar
             HStack {
-                Text("orch3")
+                Text("orch")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(.dim)
                 Spacer()

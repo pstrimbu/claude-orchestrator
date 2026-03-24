@@ -1,5 +1,5 @@
 {
-  "name": "claude-orchestrator-v3",
+  "name": "claude-orchestrator",
   "version": "0.1.0",
   "main": "dist/main/main.js",
   "scripts": {

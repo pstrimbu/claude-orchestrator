@@ -3,7 +3,7 @@ import Foundation
 
 // Single instance check via file lock
 let lockPath = FileManager.default.homeDirectoryForCurrentUser
-    .appendingPathComponent(".config/orch3/launcher.lock").path
+    .appendingPathComponent(".config/orch/launcher.lock").path
 
 let lockFd = open(lockPath, O_CREAT | O_WRONLY, 0o644)
 if lockFd >= 0 {
@@ -16,7 +16,7 @@ if lockFd >= 0 {
         // Another instance is running
         // Try to bring it to front via distributed notification
         DistributedNotificationCenter.default().post(
-            name: NSNotification.Name("com.orch3.launcher.activate"),
+            name: NSNotification.Name("com.orch.launcher.activate"),
             object: nil
         )
         exit(0)
@@ -38,7 +38,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Listen for activate notification from other instances
         DistributedNotificationCenter.default().addObserver(
-            forName: NSNotification.Name("com.orch3.launcher.activate"),
+            forName: NSNotification.Name("com.orch.launcher.activate"),
             object: nil,
             queue: .main
         ) { [weak self] _ in

@@ -2,7 +2,7 @@ import Foundation
 
 enum ConfigStore {
     static let homeDir = FileManager.default.homeDirectoryForCurrentUser
-    static let configDir = homeDir.appendingPathComponent(".config/orch3")
+    static let configDir = homeDir.appendingPathComponent(".config/orch")
     static let projectsFile = configDir.appendingPathComponent("launcher-projects.json")
     static let portalsFile = configDir.appendingPathComponent("launcher-portals.json")
     static let portsCsvPath = homeDir.appendingPathComponent("dev/dev-application-ports.csv")

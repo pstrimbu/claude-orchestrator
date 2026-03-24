@@ -36,7 +36,7 @@ export function showMainMenu(
     : 'Not a git repo';
 
   overlay.show({
-    title: `orch3 ${VERSION} — ${config.projectName}`,
+    title: `orch ${VERSION} — ${config.projectName}`,
     items: [
       {
         label: '[P] Project',

@@ -2,8 +2,8 @@
 .env
 .DS_Store
 node_modules/
-v3/dist/
-v3/src/main/version.ts
+app/dist/
+app/src/main/version.ts
 .releases/
 launcher-native/.build/
-launcher-native/orch3-launcher
+launcher-native/orch-launcher
