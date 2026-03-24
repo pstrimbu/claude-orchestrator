@@ -50,6 +50,7 @@ export interface OverlayShowData {
   editing: boolean;
   loading: boolean;
   message?: string;
+  anchor?: string;   // element ID to anchor dropdown below (omit for centered modal)
 }
 
 export interface StatusBarData {

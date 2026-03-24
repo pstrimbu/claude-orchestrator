@@ -20,6 +20,7 @@ export interface OverlayConfig {
   onClose: () => void;
   width?: number;
   footer?: string;
+  anchor?: string;
 }
 
 export class OverlayManager {
@@ -36,6 +37,11 @@ export class OverlayManager {
   }
 
   show(config: OverlayConfig): void {
+    // Toggle: if same anchor is already open, close instead
+    if (this._active && config.anchor && this._active.anchor === config.anchor) {
+      this.close();
+      return;
+    }
     this._active = config;
     this._selectedIdx = 0;
     this._loading = false;
@@ -210,6 +216,7 @@ export class OverlayManager {
       editing: this._editing,
       loading: this._loading,
       message: this._message || undefined,
+      anchor: this._active.anchor,
     };
 
     this.win.webContents.send(IPC.OVERLAY_SHOW, data);

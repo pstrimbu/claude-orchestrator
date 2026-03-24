@@ -38,6 +38,7 @@ export function showHistoryOverlay(
     title: 'Command History',
     items,
     onClose: onUpdate,
+    anchor: 'status-command',
     footer: 'Enter to type command into terminal',
   });
 }

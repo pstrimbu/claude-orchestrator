@@ -100,6 +100,7 @@ export function showTimeOverlay(overlay: OverlayManager, clockify: ClockifyServi
     title: 'Time Tracking',
     items: buildItems(),
     onClose: onUpdate,
+    anchor: 'status-time',
     footer: '[S] Start/Stop  [F] Flush  [R] Recent',
   });
 }

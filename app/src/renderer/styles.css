@@ -67,15 +67,17 @@ html, body {
   flex: 1;
 }
 
-.status-command {
+.status-section.active {
+  background: rgba(95, 175, 255, 0.15);
+}
+
+#status-command .status-value {
   color: var(--dim);
   font-size: 11px;
   max-width: 300px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 0 4px;
-  cursor: default;
 }
 
 .status-label {
@@ -155,6 +157,12 @@ body {
   z-index: 101;
   padding: 0;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+#overlay-panel.dropdown {
+  border-radius: 0 0 6px 6px;
+  border-top: none;
+  max-height: 60vh;
 }
 
 .overlay-title {

@@ -95,6 +95,7 @@ export function showGitOverlay(
     title: 'Git',
     items,
     onClose: onUpdate,
+    anchor: 'status-git',
     footer: '[Enter] Select  [Esc] Close',
   });
 }

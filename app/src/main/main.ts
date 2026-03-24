@@ -13,7 +13,12 @@ import type { TrackerService } from './services/tracker';
 import { CommandHistoryService } from './services/command-history';
 import { OverlayManager } from './overlay-manager';
 import type { StatusBarState } from './status-bar-state';
-import { showMainMenu } from './overlays/main-menu';
+import { showProjectOverlay } from './overlays/project-overlay';
+import { showTimeOverlay } from './overlays/time-overlay';
+import { showIssuesOverlay } from './overlays/issues-overlay';
+import { showGitOverlay } from './overlays/git-overlay';
+import { showHistoryOverlay } from './overlays/history-overlay';
+import { showPromptBuilderOverlay } from './overlays/prompt-overlay';
 
 // --- Parse CLI args ---
 // Electron argv: [electron, app-path, ...user-args]
@@ -324,18 +329,27 @@ function refreshTracker(): void {
   tracker = createTracker(config);
 }
 
-function openMainMenu(): void {
-  showMainMenu(
-    overlay,
-    config,
-    clockify,
-    tracker,
-    history,
-    session,
-    statusState,
-    () => refreshTracker(),
-    () => sendStatusUpdate(),
-  );
+function openSection(section: string): void {
+  switch (section) {
+    case 'project':
+      showProjectOverlay(overlay, config, statusState, () => refreshTracker(), () => sendStatusUpdate());
+      break;
+    case 'time':
+      showTimeOverlay(overlay, clockify, () => sendStatusUpdate());
+      break;
+    case 'issues':
+      showIssuesOverlay(overlay, tracker, session, statusState, config, () => refreshTracker(), () => sendStatusUpdate());
+      break;
+    case 'git':
+      showGitOverlay(overlay, config, session, () => sendStatusUpdate());
+      break;
+    case 'history':
+      showHistoryOverlay(overlay, history, session, () => sendStatusUpdate());
+      break;
+    case 'prompt':
+      showPromptBuilderOverlay(overlay, config, session);
+      break;
+  }
 }
 
 // --- IPC handlers ---
@@ -393,9 +407,15 @@ function setupIpc(): void {
 
   ipcMain.on(IPC.HOTKEY, (_e, key: string) => {
     console.log('[orch] hotkey:', key);
+    // Section clicks from status bar
+    if (key.startsWith('section:')) {
+      openSection(key.slice(8));
+      return;
+    }
+
     switch (key) {
       case 'f1':
-        openMainMenu();
+        openSection('project');
         break;
       case 'f5': {
         saveScrollback();

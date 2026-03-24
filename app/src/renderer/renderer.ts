@@ -114,9 +114,9 @@ resizeObserver.observe(container);
 
 // --- Hotkeys ---
 function handleHotkey(data: string): boolean {
-  // F1: \x1bOP
+  // F1: \x1bOP — open project panel
   if (data === '\x1bOP') {
-    api.sendHotkey('f1');
+    api.sendHotkey('section:project');
     return true;
   }
   // F5: \x1b[15~
@@ -154,6 +154,34 @@ function handleOverlayInput(data: string): void {
 
 api.onOverlayShow((data: OverlayShowData) => {
   overlayVisible = true;
+
+  // Clear active state from all sections
+  document.querySelectorAll('.status-section').forEach(s => s.classList.remove('active'));
+
+  if (data.anchor) {
+    // Dropdown mode — anchor below the clicked section
+    const anchorEl = document.getElementById(data.anchor);
+    if (anchorEl) {
+      anchorEl.classList.add('active');
+      const rect = anchorEl.getBoundingClientRect();
+      panel.classList.add('dropdown');
+      // Position below the anchor, clamped to viewport
+      const left = Math.min(rect.left, window.innerWidth - 420);
+      panel.style.left = `${Math.max(0, left)}px`;
+      panel.style.top = '28px';
+      panel.style.transform = 'none';
+    }
+    // Transparent backdrop for dropdown feel
+    backdrop.style.background = 'transparent';
+  } else {
+    // Centered modal mode
+    panel.classList.remove('dropdown');
+    panel.style.left = '';
+    panel.style.top = '';
+    panel.style.transform = '';
+    backdrop.style.background = '';
+  }
+
   backdrop.classList.remove('hidden');
   panel.classList.remove('hidden');
   renderOverlay(data);
@@ -163,6 +191,11 @@ api.onOverlayClose(() => {
   overlayVisible = false;
   backdrop.classList.add('hidden');
   panel.classList.add('hidden');
+  panel.classList.remove('dropdown');
+  panel.style.left = '';
+  panel.style.top = '';
+  panel.style.transform = '';
+  document.querySelectorAll('.status-section').forEach(s => s.classList.remove('active'));
   term.focus();
 });
 
@@ -276,16 +309,20 @@ api.onStatusUpdate((data: StatusBarData) => {
     gitEl.textContent = '\u2014';
   }
 
-  const cmdEl = document.getElementById('status-command')!;
+  const cmdEl = document.getElementById('status-command-value')!;
   if (data.lastCommand) {
     cmdEl.textContent = data.lastCommand;
-    cmdEl.title = data.lastCommand;
+    cmdEl.closest('.status-section')!.setAttribute('title', data.lastCommand);
   }
 });
 
-// Status bar click opens menu
-document.getElementById('status-bar')!.addEventListener('click', () => {
-  api.sendHotkey('f1');
+// Per-section click handlers
+document.querySelectorAll('.status-section[data-section]').forEach((el) => {
+  el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const section = el.getAttribute('data-section')!;
+    api.sendHotkey(`section:${section}`);
+  });
 });
 
 // Session exit

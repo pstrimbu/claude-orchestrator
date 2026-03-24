@@ -9,28 +9,34 @@
 </head>
 <body>
   <div id="status-bar">
-    <div class="status-section" id="status-project" data-hotkey="f1">
-      <span class="status-label">F1</span>
+    <div class="status-section" id="status-project" data-section="project">
+      <span class="status-label">?</span>
       <span class="claude-dot idle" id="claude-dot"></span>
       <span class="status-value" id="status-project-name">—</span>
     </div>
     <div class="status-sep">│</div>
-    <div class="status-section" id="status-time">
+    <div class="status-section" id="status-time" data-section="time">
       <span class="status-label">⏱</span>
       <span class="status-value" id="status-time-value">0m</span>
       <span class="status-indicator" id="status-time-indicator">○</span>
     </div>
     <div class="status-sep">│</div>
-    <div class="status-section" id="status-issues">
+    <div class="status-section" id="status-issues" data-section="issues">
       <span class="status-value" id="status-issues-value">No tracker</span>
     </div>
     <div class="status-sep">│</div>
-    <div class="status-section" id="status-git">
+    <div class="status-section" id="status-git" data-section="git">
       <span class="status-label">⎇</span>
       <span class="status-value" id="status-git-value">—</span>
     </div>
     <div class="status-spacer"></div>
-    <div class="status-command" id="status-command" title=""></div>
+    <div class="status-section" id="status-command" data-section="history">
+      <span class="status-value" id="status-command-value"></span>
+    </div>
+    <div class="status-sep">│</div>
+    <div class="status-section" id="status-prompt" data-section="prompt">
+      <span class="status-label">Prompt</span>
+    </div>
   </div>
   <div id="terminal-container"></div>
   <div id="overlay-backdrop" class="hidden"></div>

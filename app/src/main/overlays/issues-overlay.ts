@@ -30,6 +30,7 @@ export function showIssuesOverlay(
         },
       ],
       onClose: onUpdate,
+      anchor: 'status-issues',
       footer: '[C] Configure',
     });
     return;
@@ -40,6 +41,7 @@ export function showIssuesOverlay(
     title: `Issues (${tracker.type}: ${tracker.teamKey})`,
     items: [{ label: 'Loading issues...', dimmed: true }],
     onClose: onUpdate,
+    anchor: 'status-issues',
     width: 70,
     footer: '[Enter] Select  [A] Analyze  [P] Plan  [X] Fix  [N] New  [S] Status',
   });

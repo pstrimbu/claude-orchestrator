@@ -83,6 +83,7 @@ export function showProjectOverlay(
     title: 'Project',
     items,
     onClose: onUpdate,
+    anchor: 'status-project',
     width: 65,
     footer: '[W] Wizard  [E] Editor  [F] Finder',
   });
