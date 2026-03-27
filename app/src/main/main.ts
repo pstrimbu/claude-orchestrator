@@ -87,6 +87,27 @@ function saveScrollback(): void {
   } catch { /* best effort */ }
 }
 
+function registerWithLauncher(projPath: string): void {
+  try {
+    const configDir = join(require('os').homedir(), '.config', 'orch');
+    const configFile = join(configDir, 'launcher-projects.json');
+    const name = projPath.split('/').pop() || projPath;
+
+    let projects: { path: string; name: string }[] = [];
+    if (existsSync(configFile)) {
+      const data = JSON.parse(readFileSync(configFile, 'utf-8'));
+      projects = Array.isArray(data?.projects) ? data.projects : [];
+    }
+
+    if (projects.some(p => p.path === projPath)) return;
+
+    projects.push({ path: projPath, name });
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(configFile, JSON.stringify({ projects }, null, 2));
+    console.log('[orch] registered project in launcher:', name);
+  } catch { /* best effort */ }
+}
+
 function loadScrollback(): string {
   try {
     const bufPath = join(projectPath, '.orch', 'scrollback.buf');
@@ -227,6 +248,9 @@ function createWindow(): void {
   try {
     writeFileSync(join(config.orchDir, 'orch.pid'), String(process.pid));
   } catch { /* best effort */ }
+
+  // Register this project in the launcher config (if not already present)
+  registerWithLauncher(projectPath);
 
   console.log('[orch] config.projectName:', config.projectName);
   console.log('[orch] config.projectPath:', config.projectPath);
@@ -451,13 +475,23 @@ function setupIpc(): void {
         break;
       }
       case 'ctrl+r': {
+        // Rebuild and relaunch the app with --continue
+        console.log('[orch] Ctrl+R: rebuilding and relaunching...');
         saveScrollback();
-        session?.kill();
-        // Get current terminal size from the renderer
-        const cols = 120;
-        const rows = 40;
-        sessionMode = { type: 'continue' };
-        spawnSession(cols, rows);
+        try {
+          const appDir = join(__dirname, '..', '..');
+          execSync('npm run build', { cwd: appDir, stdio: 'pipe', timeout: 30000 });
+          console.log('[orch] rebuild complete, relaunching');
+        } catch (e: any) {
+          console.error('[orch] rebuild failed:', e.message);
+        }
+        // Relaunch with --continue so Claude session resumes
+        const relaunchArgs = process.argv.slice(1);
+        if (!relaunchArgs.includes('-c') && !relaunchArgs.includes('--continue')) {
+          relaunchArgs.push('--continue');
+        }
+        app.relaunch({ args: relaunchArgs });
+        app.exit(0);
         break;
       }
     }

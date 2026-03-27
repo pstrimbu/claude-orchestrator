@@ -149,6 +149,7 @@ function handleOverlayInput(data: string): void {
   else if (data.length === 1 && data.charCodeAt(0) >= 32) key = data;
   else key = data;
 
+  console.log('[overlay-input] key:', JSON.stringify(key), 'bytes:', bytes, 'from xterm onData');
   api.sendOverlayKey(key, bytes);
 }
 
@@ -201,6 +202,35 @@ api.onOverlayClose(() => {
 
 backdrop.addEventListener('click', () => {
   api.sendOverlayKey('escape');
+});
+
+// Capture keyboard events when overlay is visible and xterm doesn't have focus
+// (e.g. after clicking the overlay panel). When xterm has focus, term.onData handles it.
+document.addEventListener('keydown', (e: KeyboardEvent) => {
+  if (!overlayVisible) return;
+
+  // If xterm's textarea has focus, term.onData will handle it — skip to avoid duplicates
+  const xtermTextarea = container.querySelector('textarea');
+  if (xtermTextarea && document.activeElement === xtermTextarea) return;
+
+  e.preventDefault();
+  e.stopPropagation();
+
+  if (e.key === 'Escape') {
+    api.sendOverlayKey('escape');
+  } else if (e.key === 'Enter') {
+    api.sendOverlayKey('return');
+  } else if (e.key === 'Backspace') {
+    api.sendOverlayKey('backspace');
+  } else if (e.key === 'ArrowUp') {
+    api.sendOverlayKey('up');
+  } else if (e.key === 'ArrowDown') {
+    api.sendOverlayKey('down');
+  } else if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    const bytes = Array.from(new TextEncoder().encode(e.key));
+    console.log('[overlay-input] key:', JSON.stringify(e.key), 'bytes:', bytes, 'from keydown handler');
+    api.sendOverlayKey(e.key, bytes);
+  }
 });
 
 function renderOverlay(data: OverlayShowData): void {

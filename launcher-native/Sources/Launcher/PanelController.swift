@@ -321,6 +321,10 @@ class PanelController {
     // MARK: - Add Project Dialog
 
     func showAddProjectDialog() {
+        // Temporarily become a regular app so NSOpenPanel can appear
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
         let openPanel = NSOpenPanel()
         openPanel.canChooseFiles = false
         openPanel.canChooseDirectories = true
@@ -333,6 +337,10 @@ class PanelController {
                 DispatchQueue.main.async {
                     self?.viewModel.addProject(path: url.path)
                 }
+            }
+            // Revert to accessory app (no dock icon)
+            DispatchQueue.main.async {
+                NSApp.setActivationPolicy(.accessory)
             }
         }
     }

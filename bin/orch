@@ -121,5 +121,11 @@ fi
 # Run with Electron — launch directly in background
 # Use & (not nohup) to keep macOS window server registration
 ELECTRON="$APP_DIR/node_modules/.bin/electron"
-"$ELECTRON" "$APP_DIR" "$PROJECT_PATH" ${ARGS[@]+"${ARGS[@]}"} >/dev/null 2>&1 &
+# In dev mode, log to file for debugging; release mode suppresses output
+if [ "$USE_DEV" = true ]; then
+  LOGFILE="$PROJECT_PATH/.orch/orch.log"
+  "$ELECTRON" "$APP_DIR" "$PROJECT_PATH" ${ARGS[@]+"${ARGS[@]}"} >"$LOGFILE" 2>&1 &
+else
+  "$ELECTRON" "$APP_DIR" "$PROJECT_PATH" ${ARGS[@]+"${ARGS[@]}"} >/dev/null 2>&1 &
+fi
 disown

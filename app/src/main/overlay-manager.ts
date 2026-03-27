@@ -12,6 +12,7 @@ export interface OverlayItem {
   editValue?: string;
   placeholder?: string;
   onEdit?: (value: string) => void;
+  onSubmit?: (value: string) => void | Promise<void>;
 }
 
 export interface OverlayConfig {
@@ -85,6 +86,8 @@ export class OverlayManager {
   handleKey(key: string, rawBytes?: number[]): void {
     if (!this._active) return;
 
+    console.log('[overlay] handleKey:', JSON.stringify(key), 'editing:', this._editing, 'selectedIdx:', this._selectedIdx, 'rawBytes:', rawBytes);
+
     if (this._editing) {
       this.handleEditKey(key, rawBytes);
       return;
@@ -133,6 +136,13 @@ export class OverlayManager {
       }
       default: {
         if (key.length === 1 && this._active) {
+          // If the selected item is editable, auto-enter edit mode and pass the key through
+          const selectedItem = this._active.items[this._selectedIdx];
+          if (selectedItem?.editable) {
+            this._editing = true;
+            this.handleEditKey(key, rawBytes);
+            return;
+          }
           const match = this._active.items.find(
             (item) => item.shortcut?.toLowerCase() === key.toLowerCase() && item.action,
           );
@@ -153,9 +163,24 @@ export class OverlayManager {
     }
 
     const current = item.editValue || '';
+    console.log('[overlay] handleEditKey:', JSON.stringify(key), 'current:', JSON.stringify(current), 'rawBytes:', rawBytes);
 
     switch (key) {
-      case 'return':
+      case 'return': {
+        this._editing = false;
+        if (item.onSubmit) {
+          const result = item.onSubmit(current);
+          if (result instanceof Promise) {
+            result.catch((e) => {
+              this.setLoading(false);
+              this.showMessage(`Error: ${e.message}`);
+            });
+          }
+        } else {
+          this.sendState();
+        }
+        return;
+      }
       case 'escape':
         this._editing = false;
         this.sendState();
