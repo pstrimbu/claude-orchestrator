@@ -93,6 +93,12 @@ export class ClaudeSession extends EventEmitter {
 
     this.proc.onExit(({ exitCode }) => {
       this._running = false;
+      // If --continue failed (no prior conversation), retry as a new session
+      if (exitCode !== 0 && this._mode.type === 'continue') {
+        this._mode = { type: 'new' };
+        this.spawn();
+        return;
+      }
       this.emit('exit', exitCode);
     });
   }

@@ -1,6 +1,34 @@
 import Foundation
+import CoreGraphics
+import AppKit
 
 enum SystemUtils {
+    /// Get the screen-space bounds of the main window for a given PID, or nil if not found
+    static func getWindowBounds(pid: Int32) -> CGRect? {
+        guard let infoList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+        for info in infoList {
+            guard let ownerPid = info[kCGWindowOwnerPID as String] as? Int32,
+                  ownerPid == pid,
+                  let layer = info[kCGWindowLayer as String] as? Int, layer == 0,
+                  let bounds = info[kCGWindowBounds as String] as? [String: CGFloat],
+                  let x = bounds["X"], let y = bounds["Y"],
+                  let w = bounds["Width"], let h = bounds["Height"] else { continue }
+            return CGRect(x: x, y: y, width: w, height: h)
+        }
+        return nil
+    }
+
+    /// Determine which NSScreen contains the center of a CG-coordinate rect
+    static func screenForCGRect(_ rect: CGRect) -> NSScreen? {
+        // CG coordinates: origin top-left. NSScreen: origin bottom-left.
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let centerX = rect.midX
+        let centerY = primaryHeight - rect.midY  // flip to NS coordinates
+        let nsPoint = NSPoint(x: centerX, y: centerY)
+        return NSScreen.screens.first { $0.frame.contains(nsPoint) } ?? NSScreen.main
+    }
     /// Get set of TCP ports currently in LISTEN state
     static func getListeningPorts() -> Set<UInt16> {
         let process = Process()

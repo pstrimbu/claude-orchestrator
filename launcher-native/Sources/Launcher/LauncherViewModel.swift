@@ -8,27 +8,54 @@ final class LauncherViewModel: ObservableObject {
     @Published var isExpanded = false
     @Published var showingPortalPicker = false
     @Published var pendingPortals: Set<String> = []  // portal names currently starting/stopping
+    private var removedNames: Set<String> = []  // recently removed — suppress from poll results
 
     private var pollTimer: Timer?
 
     init() {
         projects = ConfigStore.loadProjects()
         refreshStatuses()
-        startPolling()
+        listenForReloadNotification()
+    }
+
+    private func listenForReloadNotification() {
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        let observer = Unmanaged.passUnretained(self).toOpaque()
+        CFNotificationCenterAddObserver(center, observer, { _, observer, _, _, _ in
+            guard let observer else { return }
+            let vm = Unmanaged<LauncherViewModel>.fromOpaque(observer).takeUnretainedValue()
+            DispatchQueue.main.async {
+                vm.reloadProjects()
+            }
+        }, "com.orch.reload-projects" as CFString, nil, .deliverImmediately)
+    }
+
+    func reloadProjects() {
+        removedNames.removeAll()
+        projects = ConfigStore.loadProjects()
+        refreshStatuses()
     }
 
     func startPolling() {
+        guard pollTimer == nil else { return }
         pollTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             self?.refreshStatuses()
         }
     }
 
+    func stopPolling() {
+        pollTimer?.invalidate()
+        pollTimer = nil
+    }
+
     func refreshStatuses() {
+        let snapshot = projects
+        let removed = removedNames
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self else { return }
-            let projects = self.projects
-            let statuses = Self.buildAppStatuses(projects: projects)
+            let statuses = Self.buildAppStatuses(projects: snapshot)
+                .filter { !removed.contains($0.name) }
             DispatchQueue.main.async {
+                guard let self else { return }
                 self.apps = statuses
             }
         }
@@ -45,9 +72,20 @@ final class LauncherViewModel: ObservableObject {
     }
 
     func removeProject(path: String) {
+        let name = (path as NSString).lastPathComponent
+        removedNames.insert(name)
         projects.removeAll { $0.path == path }
-        ConfigStore.saveProjects(projects)
-        refreshStatuses()
+        apps.removeAll { $0.sessionPath == path || ($0.sessionPath == nil && $0.portalName == name) }
+        let snapshot = projects
+        DispatchQueue.global(qos: .utility).async {
+            ConfigStore.saveProjects(snapshot)
+            // Also hide matching portal so it doesn't reappear as standalone
+            var cfg = ConfigStore.loadHiddenPortals()
+            if !cfg.hidden.contains(name) {
+                cfg.hidden.append(name)
+                ConfigStore.saveHiddenPortals(cfg)
+            }
+        }
     }
 
     func openProject(path: String) {
@@ -67,9 +105,6 @@ final class LauncherViewModel: ObservableObject {
     }
 
     func moveProject(from source: IndexSet, to destination: Int) {
-        // Only move projects that have sessionPaths (not standalone portals)
-        var projectPaths = projects.map(\.path)
-        // This is a simplified reorder - works on the projects list directly
         projects.move(fromOffsets: source, toOffset: destination)
         ConfigStore.saveProjects(projects)
     }
@@ -149,38 +184,64 @@ final class LauncherViewModel: ObservableObject {
         }.sorted(by: { $0.0 < $1.0 })
 
         guard !running.isEmpty else { return }
-        guard let screen = NSScreen.main else { return }
 
-        let screenW = Int(screen.frame.width)
-        let screenH = Int(screen.frame.height)
-        let menuBar = 25
-        let workH = screenH - menuBar
-
-        let maxOffset = 80
-        let winW = 1200
-        let winH = 800
-
-        let baseX = (screenW - winW) / 2
-        let baseY = menuBar + workH - winH
-
-        let availableY = baseY - menuBar
-        let gaps = running.count - 1
-        let offset = gaps > 0 ? min(maxOffset, availableY / gaps) : 0
-
-        for i in stride(from: running.count - 1, through: 0, by: -1) {
-            let (_, path, pid) = running[i]
-            let x = baseX + offset * i
-            let y = baseY - offset * i
-            let orchDir = (path as NSString).appendingPathComponent(".orch")
-            try? FileManager.default.createDirectory(atPath: orchDir, withIntermediateDirectories: true)
-            let cmd: [String: Any] = ["x": x, "y": y, "focus": i == 0]
-            if let data = try? JSONSerialization.data(withJSONObject: cmd) {
-                try? data.write(to: URL(fileURLWithPath: orchDir + "/window-cmd.json"))
+        // Group windows by the screen they're currently on
+        var screenGroups: [String: [(String, String, Int32, NSScreen)]] = [:]
+        for (name, path, pid) in running {
+            let screen: NSScreen
+            if let bounds = SystemUtils.getWindowBounds(pid: pid),
+               let s = SystemUtils.screenForCGRect(bounds) {
+                screen = s
+            } else {
+                screen = NSScreen.main ?? NSScreen.screens[0]
             }
-            kill(pid, SIGUSR2)
+            let key = "\(screen.frame.origin.x),\(screen.frame.origin.y)"
+            screenGroups[key, default: []].append((name, path, pid, screen))
         }
 
-        if let (_, _, pid) = running.first {
+        var firstPid: Int32?
+
+        for (_, group) in screenGroups {
+            guard let screen = group.first?.3 else { continue }
+
+            let screenW = Int(screen.frame.width)
+            let screenH = Int(screen.frame.height)
+            // Convert screen origin to CG coordinates (top-left) for window-cmd
+            let primaryHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
+            let screenTopY = Int(primaryHeight - screen.frame.maxY)
+            let menuBar = 25
+            let workH = screenH - menuBar
+
+            let maxOffset = 80
+            let winW = 1200
+            let winH = 800
+
+            let baseX = Int(screen.frame.origin.x) + (screenW - winW) / 2
+            let baseY = screenTopY + menuBar + workH - winH
+
+            let availableY = baseY - (screenTopY + menuBar)
+            let gaps = group.count - 1
+            let offset = gaps > 0 ? min(maxOffset, availableY / gaps) : 0
+
+            for i in stride(from: group.count - 1, through: 0, by: -1) {
+                let (_, path, pid, _) = group[i]
+                let x = baseX + offset * i
+                let y = baseY - offset * i
+                let orchDir = (path as NSString).appendingPathComponent(".orch")
+                try? FileManager.default.createDirectory(atPath: orchDir, withIntermediateDirectories: true)
+                let cmd: [String: Any] = ["x": x, "y": y, "focus": i == 0]
+                if let data = try? JSONSerialization.data(withJSONObject: cmd) {
+                    try? data.write(to: URL(fileURLWithPath: orchDir + "/window-cmd.json"))
+                }
+                kill(pid, SIGUSR2)
+            }
+
+            if firstPid == nil {
+                firstPid = group.first?.2
+            }
+        }
+
+        if let pid = firstPid {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 kill(pid, SIGUSR1)
             }

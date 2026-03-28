@@ -105,6 +105,9 @@ struct ExpandedView: View {
                     TitlebarButton(icon: "\u{2699}", tooltip: "Show hidden portal") {
                         viewModel.showingPortalPicker = true
                     }
+                    TitlebarButton(icon: "\u{21BB}", tooltip: "Reload config") {
+                        viewModel.reloadProjects()
+                    }
                     TitlebarButton(icon: "+", tooltip: "Add project") {
                         onAddProject()
                     }

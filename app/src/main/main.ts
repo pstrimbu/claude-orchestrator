@@ -105,6 +105,9 @@ function registerWithLauncher(projPath: string): void {
     mkdirSync(configDir, { recursive: true });
     writeFileSync(configFile, JSON.stringify({ projects }, null, 2));
     console.log('[orch] registered project in launcher:', name);
+
+    // Notify the launcher to reload its project list
+    require('child_process').exec('notifyutil -p com.orch.reload-projects');
   } catch { /* best effort */ }
 }
 

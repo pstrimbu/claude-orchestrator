@@ -119,8 +119,11 @@ class PanelController {
             x = panel.frame.origin.x + panel.frame.width - width
         }
 
-        let y = screenFrame.maxY - anchorY - height
-        panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+        // Clamp height to screen and shift up if panel would extend past the bottom
+        let maxHeight = screenFrame.height - anchorY
+        let clampedHeight = min(height, maxHeight)
+        let y = screenFrame.maxY - anchorY - clampedHeight
+        panel.setFrame(NSRect(x: x, y: y, width: width, height: clampedHeight), display: true)
     }
 
     // MARK: - Expand / Collapse
@@ -133,6 +136,7 @@ class PanelController {
 
         viewModel.isExpanded = true
         viewModel.refreshStatuses()
+        viewModel.startPolling()
         layoutPanel(expanded: true)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
@@ -148,6 +152,7 @@ class PanelController {
 
         viewModel.showingPortalPicker = false
         viewModel.isExpanded = false
+        viewModel.stopPolling()
         layoutPanel(expanded: false)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
