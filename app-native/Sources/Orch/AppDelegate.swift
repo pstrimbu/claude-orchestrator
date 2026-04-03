@@ -1,7 +1,6 @@
 import AppKit
 import SwiftUI
 import SwiftTerm
-import Combine
 
 class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     let projectPath: String
@@ -27,7 +26,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     // Keep signal sources alive
     private var sigUsr1Source: DispatchSourceSignal?
     private var sigUsr2Source: DispatchSourceSignal?
-    private var cancellables = Set<AnyCancellable>()
 
     // Scrollback
     private let scrollbackMax = 256 * 1024
@@ -168,15 +166,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         let statusBar = NSHostingView(rootView: StatusBarView(model: statusBarModel))
         statusBar.translatesAutoresizingMaskIntoConstraints = false
 
-        // Overlay (SwiftUI layer on top of terminal — hidden until overlay is visible)
-        let overlayHost = PassthroughHostingView(rootView: OverlayView(overlay: overlay))
-        overlayHost.translatesAutoresizingMaskIntoConstraints = false
-        overlayHost.isHidden = true
-        // Watch overlay visibility to show/hide the hosting view
-        overlay.$visible.sink { [weak overlayHost] visible in
-            overlayHost?.isHidden = !visible
-        }.store(in: &cancellables)
-
         // Window — create first so we can constrain to its contentView
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
@@ -204,13 +193,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         terminalView.frame = NSRect(x: 0, y: 0, width: cw, height: ch - statusH)
         terminalView.autoresizingMask = [.width, .height]
 
-        overlayHost.translatesAutoresizingMaskIntoConstraints = true
-        overlayHost.frame = container.bounds
-        overlayHost.autoresizingMask = [.width, .height]
-
         container.addSubview(terminalView)
         container.addSubview(statusBar)
-        container.addSubview(overlayHost)
         window.isReleasedWhenClosed = false
         window.titlebarAppearsTransparent = true
 
@@ -254,19 +238,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     /// Called when the terminal has data to send (keyboard input from user)
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
         let bytes = Array(data)
-        if let str = String(bytes: bytes, encoding: .utf8) {
-            Log.log("send(\(bytes.count) bytes): \(str.debugDescription)")
-        }
-
-        // Check for overlay input first
-        if overlay.visible {
-            if let str = String(bytes: bytes, encoding: .utf8) {
-                let key = translateTerminalInput(str)
-                overlay.handleKey(key)
-            }
-            return
-        }
-
         // Check for hotkeys
         if let str = String(bytes: bytes, encoding: .utf8), handleHotkey(str) {
             return
@@ -332,18 +303,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {}
 
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
-
-    // MARK: - Input translation
-
-    private func translateTerminalInput(_ data: String) -> String {
-        if data == "\u{1b}" || data == "\u{1b}\u{1b}" { return "escape" }
-        if data == "\r" { return "return" }
-        if data == "\u{7f}" { return "backspace" }
-        if data == "\u{1b}[A" { return "up" }
-        if data == "\u{1b}[B" { return "down" }
-        if data.count == 1, let s = data.unicodeScalars.first, s.value >= 32 { return data }
-        return data
-    }
 
     private func handleHotkey(_ data: String) -> Bool {
         // F1: \x1bOP — open project panel
@@ -626,12 +585,3 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     }
 }
 
-// MARK: - Passthrough NSHostingView (doesn't intercept mouse/keyboard when hidden content)
-
-class PassthroughHostingView<Content: View>: NSHostingView<Content> {
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        // When hidden, don't intercept any events
-        if isHidden { return nil }
-        return super.hitTest(point)
-    }
-}
