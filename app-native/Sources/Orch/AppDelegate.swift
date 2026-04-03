@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import SwiftTerm
+import Combine
 
 class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     let projectPath: String
@@ -26,6 +27,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     // Keep signal sources alive
     private var sigUsr1Source: DispatchSourceSignal?
     private var sigUsr2Source: DispatchSourceSignal?
+    private var cancellables = Set<AnyCancellable>()
 
     // Scrollback
     private let scrollbackMax = 256 * 1024
@@ -44,6 +46,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
 
         // Initialize services
         config = Config(projectPath: projectPath)
+        Log.setup(orchDir: config.orchDir)
+        Log.log("projectPath: \(projectPath)")
         clockify = ClockifyService(config: config)
         tracker = createTracker(config: config)
         history = CommandHistoryService(orchDir: config.orchDir)
@@ -108,6 +112,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
 
         // Spawn Claude session using terminal dimensions
         let terminal = terminalView.getTerminal()
+        Log.log("terminal size: \(terminal.cols)x\(terminal.rows)")
         spawnSession(cols: terminal.cols, rows: terminal.rows)
 
         // Start polling
@@ -163,40 +168,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         let statusBar = NSHostingView(rootView: StatusBarView(model: statusBarModel))
         statusBar.translatesAutoresizingMaskIntoConstraints = false
 
-        // Overlay (SwiftUI layer on top of terminal)
-        let overlayHost = NSHostingView(rootView: OverlayView(overlay: overlay))
+        // Overlay (SwiftUI layer on top of terminal — hidden until overlay is visible)
+        let overlayHost = PassthroughHostingView(rootView: OverlayView(overlay: overlay))
         overlayHost.translatesAutoresizingMaskIntoConstraints = false
-        // Make overlay transparent to mouse when not visible
-        overlayHost.wantsLayer = true
+        overlayHost.isHidden = true
+        // Watch overlay visibility to show/hide the hosting view
+        overlay.$visible.sink { [weak overlayHost] visible in
+            overlayHost?.isHidden = !visible
+        }.store(in: &cancellables)
 
-        // Container
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 1200, height: 800))
-        container.wantsLayer = true
-        container.layer?.backgroundColor = NSColor(red: 0x1e/255, green: 0x1e/255, blue: 0x1e/255, alpha: 1).cgColor
-
-        terminalView.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(statusBar)
-        container.addSubview(terminalView)
-        container.addSubview(overlayHost)
-
-        NSLayoutConstraint.activate([
-            statusBar.topAnchor.constraint(equalTo: container.topAnchor),
-            statusBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            statusBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            statusBar.heightAnchor.constraint(equalToConstant: 28),
-
-            terminalView.topAnchor.constraint(equalTo: statusBar.bottomAnchor),
-            terminalView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            terminalView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            terminalView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-
-            overlayHost.topAnchor.constraint(equalTo: container.topAnchor),
-            overlayHost.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            overlayHost.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            overlayHost.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-        ])
-
-        // Window
+        // Window — create first so we can constrain to its contentView
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
             styleMask: [.titled, .closable, .resizable, .miniaturizable],
@@ -204,9 +185,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             defer: false
         )
         window.title = appName
-        window.contentView = container
         window.center()
         window.backgroundColor = NSColor(red: 0x1e/255, green: 0x1e/255, blue: 0x1e/255, alpha: 1)
+
+        // Use frame-based layout with autoresizing masks
+        let container = window.contentView!
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor(red: 0x1e/255, green: 0x1e/255, blue: 0x1e/255, alpha: 1).cgColor
+        let cw = container.bounds.width
+        let ch = container.bounds.height
+        let statusH: CGFloat = 28
+
+        statusBar.translatesAutoresizingMaskIntoConstraints = true
+        statusBar.frame = NSRect(x: 0, y: ch - statusH, width: cw, height: statusH)
+        statusBar.autoresizingMask = [.width, .minYMargin]
+
+        terminalView.translatesAutoresizingMaskIntoConstraints = true
+        terminalView.frame = NSRect(x: 0, y: 0, width: cw, height: ch - statusH)
+        terminalView.autoresizingMask = [.width, .height]
+
+        overlayHost.translatesAutoresizingMaskIntoConstraints = true
+        overlayHost.frame = container.bounds
+        overlayHost.autoresizingMask = [.width, .height]
+
+        container.addSubview(terminalView)
+        container.addSubview(statusBar)
+        container.addSubview(overlayHost)
         window.isReleasedWhenClosed = false
         window.titlebarAppearsTransparent = true
 
@@ -250,6 +254,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     /// Called when the terminal has data to send (keyboard input from user)
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
         let bytes = Array(data)
+        if let str = String(bytes: bytes, encoding: .utf8) {
+            Log.log("send(\(bytes.count) bytes): \(str.debugDescription)")
+        }
 
         // Check for overlay input first
         if overlay.visible {
@@ -407,13 +414,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     }
 
     private func handleSessionData(_ data: String) {
-        var processed = data
-        processed = processed
-            .replacingOccurrences(of: "\u{1b}[3J", with: "")
-            .replacingOccurrences(of: "\u{1b}[?1049h", with: "")
-            .replacingOccurrences(of: "\u{1b}[?1049l", with: "")
-            .replacingOccurrences(of: "\u{1b}[?47h", with: "")
-            .replacingOccurrences(of: "\u{1b}[?47l", with: "")
+        // Only strip clear-scrollback; pass everything else through to SwiftTerm
+        let processed = data.replacingOccurrences(of: "\u{1b}[3J", with: "")
 
         appendScrollback(processed)
         lastPtyOutputTime = Date()
@@ -422,6 +424,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     }
 
     private func handleSessionExit(_ code: Int32) {
+        Log.log("session exited with code \(code)")
         terminalView.feed(text: "\r\n\u{1b}[90m[Session exited with code \(code)]\u{1b}[0m\r\n")
     }
 
@@ -620,5 +623,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         } catch { return nil }
+    }
+}
+
+// MARK: - Passthrough NSHostingView (doesn't intercept mouse/keyboard when hidden content)
+
+class PassthroughHostingView<Content: View>: NSHostingView<Content> {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // When hidden, don't intercept any events
+        if isHidden { return nil }
+        return super.hitTest(point)
     }
 }

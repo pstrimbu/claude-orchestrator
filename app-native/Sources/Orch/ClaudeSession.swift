@@ -23,7 +23,7 @@ class ClaudeSession {
 
     func spawn() {
         let claudePath = resolveClaudePath()
-        print("[orch] using claude at: \(claudePath)")
+        Log.log("using claude at: \(claudePath)")
 
         var args = ["--dangerously-skip-permissions"]
         switch mode {
@@ -44,7 +44,7 @@ class ClaudeSession {
         let pid = forkpty(&masterFdVar, nil, nil, &winSize)
 
         if pid < 0 {
-            print("[orch] forkpty failed: \(errno)")
+            Log.log("forkpty failed: \(errno)")
             return
         }
 
@@ -116,7 +116,7 @@ class ClaudeSession {
             }
         }
 
-        print("[orch] session spawned, pid=\(pid)")
+        Log.log("session spawned, pid=\(pid), masterFd=\(masterFdVar)")
     }
 
     func write(_ data: String) {
