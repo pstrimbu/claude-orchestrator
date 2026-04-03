@@ -1,6 +1,6 @@
 # Claude Orchestrator
 
-Electron-based GUI for running Claude Code sessions with integrated time tracking, issue management, and git integration.
+Native macOS (Swift/AppKit) app for running Claude Code sessions with integrated time tracking, issue management, and git integration. Uses SwiftTerm for terminal emulation.
 
 ## Quick Start
 
@@ -8,14 +8,13 @@ Electron-based GUI for running Claude Code sessions with integrated time trackin
 orch                      # launch for current directory
 orch /path/to/project     # launch for specific project
 orch --continue           # resume previous session
-orch --dev                # run from working tree (not tagged release)
 ```
 
 ## Commands
 
 | Command | Purpose |
 |---------|---------|
-| `orch` | Launch the orchestrator (Electron app) |
+| `orch` | Launch the orchestrator (native Swift app) |
 | `orch-launcher` | Launch the project launcher sidebar (native Swift) |
 | `orch-tracker` | Unified issue tracker CLI (routes to Linear or Jira) |
 | `orch-linear` | Linear GraphQL API client |
@@ -23,27 +22,31 @@ orch --dev                # run from working tree (not tagged release)
 
 ## Architecture
 
-- `app/` — Electron app (main process + xterm.js renderer)
+- `app-native/` — Native Swift/AppKit app with SwiftTerm terminal
+- `app/` — Legacy Electron app (preserved on main branch, pre-v0.5.5)
 - `launcher-native/` — Native Swift/AppKit floating panel launcher
 - `bin/` — CLI scripts (on PATH)
 - `docs/` — Configuration and tracker documentation
 - `templates/` — Issue templates for Linear/Jira
 
-## App Structure (`app/`)
+## App Structure (`app-native/`)
 
-- `src/main/main.ts` — Electron main process, IPC handlers, spawns Claude PTY
-- `src/main/claude-session.ts` — node-pty wrapper for Claude CLI
-- `src/main/services/` — Clockify, tracker, command history
-- `src/main/overlays/` — Menu panels (project, time, issues, git, history)
-- `src/renderer/` — xterm.js terminal, status bar, overlay rendering
-- `src/shared/ipc.ts` — IPC channel constants and types
+- `Sources/Orch/main.swift` — Entry point, CLI arg parsing
+- `Sources/Orch/AppDelegate.swift` — NSWindow, SwiftTerm TerminalView, PTY I/O, hotkeys
+- `Sources/Orch/ClaudeSession.swift` — forkpty wrapper for Claude CLI
+- `Sources/Orch/Config.swift` — Project configuration (.orch/project.json)
+- `Sources/Orch/StatusBarView.swift` — SwiftUI status bar (project, time, issues, git)
+- `Sources/Orch/OverlayManager.swift` — Overlay state machine and keyboard navigation
+- `Sources/Orch/OverlayView.swift` — SwiftUI overlay rendering
+- `Sources/Orch/Services/` — ClockifyService, TrackerService, CommandHistory
+- `Sources/Orch/Overlays/` — Project, Time, Issues, Git, History, Prompt, Setup overlays
 
 ## Hotkeys
 
-- **F1** — Main menu (Project, Time, Issues, Git, History)
-- **F5** — Restart session with `--continue`
+- **F1** — Project panel
+- **F5** — Save scrollback, relaunch with `--continue`
 - **Ctrl+R** — Restart Claude session in-place
-- **Shift+Enter** — Send newline (multiline input)
+- **Cmd+Q** — Quit
 
 ## State
 
@@ -51,7 +54,7 @@ Per-project in `.orch/` (gitignored):
 - `orch.pid` — Process ID for focus/cascade signals
 - `project.json` — Tracker config (type, team key, title prefix)
 - `scrollback.buf` — Terminal buffer persisted across restarts
-- `history.json` — Command history for Clockify summaries
+- `command-history.jsonl` — Command history for Clockify summaries
 
 ## Configuration
 
@@ -60,7 +63,11 @@ Set credentials in `.env` (project-level or repo-level):
 - `LINEAR_API_KEY` — Linear issue tracker
 - `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` — Jira
 
-## Releases
+## Build
 
-`bin/orch` defaults to the latest git tag. Tagged releases are cached in `.releases/`.
-Use `--dev` to run from the working tree. Use `--version=vX.Y.Z` for a specific tag.
+```bash
+cd app-native && swift build           # debug build
+cd app-native && swift build -c release  # release build (2.9MB binary)
+```
+
+`bin/orch` auto-builds on first run and rebuilds when sources change.

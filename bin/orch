@@ -1,24 +1,16 @@
 #!/usr/bin/env bash
-# orch — Launch Claude Orchestrator (Electron app)
+# orch — Launch Claude Orchestrator (native Swift app)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$SCRIPT_DIR/.."
-RELEASE_DIR="$REPO_DIR/.releases"
+APP_DIR="$REPO_DIR/app-native"
 
 # Parse arguments — separate flags from project path
 ARGS=()
 PROJECT_PATH=""
-USE_DEV=false
-USE_VERSION=""
 for arg in "$@"; do
   case "$arg" in
-    --dev)
-      USE_DEV=true
-      ;;
-    --version=*)
-      USE_VERSION="${arg#--version=}"
-      ;;
     -c|--continue|-h|--help)
       ARGS+=("$arg")
       ;;
@@ -68,64 +60,21 @@ load_env() {
 load_env "$PROJECT_PATH/.env"
 load_env "$REPO_DIR/.env"
 
-# --- Determine which app directory to use ---
-if [ "$USE_DEV" = true ]; then
-  # Dev mode: run from working tree
-  APP_DIR="$REPO_DIR/app"
-  echo "Running in dev mode from working tree"
-else
-  # Release mode: checkout a specific tag into .releases/<tag>/app
-  if [ -z "$USE_VERSION" ]; then
-    # Find latest tag
-    USE_VERSION="$(cd "$REPO_DIR" && git describe --tags --abbrev=0 2>/dev/null || echo "")"
-    if [ -z "$USE_VERSION" ]; then
-      echo "No tags found, falling back to dev mode"
-      APP_DIR="$REPO_DIR/app"
-    fi
-  fi
-
-  if [ -n "$USE_VERSION" ]; then
-    RELEASE_APP="$RELEASE_DIR/$USE_VERSION/app"
-
-    if [ ! -d "$RELEASE_APP/dist" ]; then
-      echo "Preparing release $USE_VERSION..."
-      mkdir -p "$RELEASE_DIR/$USE_VERSION"
-
-      # Export the tagged version's app directory
-      (cd "$REPO_DIR" && git archive "$USE_VERSION" -- app/ | tar -x -C "$RELEASE_DIR/$USE_VERSION")
-
-      # Install deps and build
-      (cd "$RELEASE_APP" && npm install && npm run build)
-      echo "Release $USE_VERSION ready"
-    fi
-
-    APP_DIR="$RELEASE_APP"
-    echo "Running $USE_VERSION"
-  fi
+# Build native app if needed
+BINARY="$APP_DIR/.build/debug/orch"
+if [ ! -f "$BINARY" ]; then
+  echo "Building native app..."
+  (cd "$APP_DIR" && swift build 2>&1)
 fi
 
-# Check if dependencies are installed
-if [ ! -d "$APP_DIR/node_modules" ]; then
-  echo "Installing dependencies..."
-  (cd "$APP_DIR" && npm install)
+# Check if source is newer than binary
+NEWEST_SRC=$(find "$APP_DIR/Sources" -name '*.swift' -newer "$BINARY" 2>/dev/null | head -1)
+if [ -n "$NEWEST_SRC" ]; then
+  echo "Rebuilding..."
+  (cd "$APP_DIR" && swift build 2>&1)
 fi
 
-# Build if needed (dev mode only — releases are pre-built)
-if [ "$USE_DEV" = true ]; then
-  if [ ! -d "$APP_DIR/dist" ] || [ "$APP_DIR/src/main/main.ts" -nt "$APP_DIR/dist/main/main.js" ]; then
-    echo "Building..."
-    (cd "$APP_DIR" && npm run build)
-  fi
-fi
-
-# Run with Electron — launch directly in background
-# Use & (not nohup) to keep macOS window server registration
-ELECTRON="$APP_DIR/node_modules/.bin/electron"
-# In dev mode, log to file for debugging; release mode suppresses output
-if [ "$USE_DEV" = true ]; then
-  LOGFILE="$PROJECT_PATH/.orch/orch.log"
-  "$ELECTRON" "$APP_DIR" "$PROJECT_PATH" ${ARGS[@]+"${ARGS[@]}"} >"$LOGFILE" 2>&1 &
-else
-  "$ELECTRON" "$APP_DIR" "$PROJECT_PATH" ${ARGS[@]+"${ARGS[@]}"} >/dev/null 2>&1 &
-fi
+# Launch in background
+LOGFILE="$PROJECT_PATH/.orch/orch.log"
+"$BINARY" "$PROJECT_PATH" ${ARGS[@]+"${ARGS[@]}"} >"$LOGFILE" 2>&1 &
 disown
