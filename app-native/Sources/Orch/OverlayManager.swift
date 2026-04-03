@@ -33,7 +33,6 @@ class OverlayManager {
     private var activeAnchor: String?
     private var activeConfig: OverlayConfig?
     private var menuActions: [MenuAction] = []
-    private weak var anchorView: NSView?
     var visible: Bool { activeAnchor != nil }
 
     /// Show a menu built from the config, anchored below the status bar
@@ -108,11 +107,10 @@ class OverlayManager {
         // Title header
         let titleItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         titleItem.isEnabled = false
-        let titleAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.boldSystemFont(ofSize: 12),
+        titleItem.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: NSFont.boldSystemFont(ofSize: 13),
             .foregroundColor: NSColor.labelColor,
-        ]
-        titleItem.attributedTitle = NSAttributedString(string: title, attributes: titleAttrs)
+        ])
         menu.addItem(titleItem)
         menu.addItem(NSMenuItem.separator())
 
@@ -137,12 +135,11 @@ class OverlayManager {
                 continue
             }
 
-            // Build display string
+            // Build display string — strip "[X] " prefixes since NSMenu shows shortcuts natively
             var display = item.label
-            if let value = item.value {
-                // Pad to align values on the right
-                let padding = max(1, 50 - item.label.count)
-                display += String(repeating: " ", count: padding) + value
+            if item.shortcut != nil {
+                let pattern = "^\\[[A-Za-z]\\] "
+                display = display.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
             }
 
             let menuItem = NSMenuItem(title: display, action: nil, keyEquivalent: "")
@@ -152,24 +149,32 @@ class OverlayManager {
                 menuItem.keyEquivalentModifierMask = []
             }
 
+            // Build attributed title with optional dimmed value suffix
+            if let value = item.value, !value.isEmpty {
+                let str = NSMutableAttributedString(string: display + "  ", attributes: [
+                    .font: NSFont.systemFont(ofSize: 13),
+                ])
+                str.append(NSAttributedString(string: value, attributes: [
+                    .font: NSFont.systemFont(ofSize: 11),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ]))
+                menuItem.attributedTitle = str
+            }
+
             if item.dimmed && item.action == nil {
                 menuItem.isEnabled = false
-                let dimAttrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
-                    .foregroundColor: NSColor.secondaryLabelColor,
-                ]
-                menuItem.attributedTitle = NSAttributedString(string: display, attributes: dimAttrs)
+                if menuItem.attributedTitle == nil {
+                    menuItem.attributedTitle = NSAttributedString(string: display, attributes: [
+                        .font: NSFont.systemFont(ofSize: 13),
+                        .foregroundColor: NSColor.secondaryLabelColor,
+                    ])
+                }
             } else if let action = item.action {
                 let menuAction = MenuAction(action)
                 menuItem.target = menuAction
                 menuItem.action = #selector(MenuAction.invoke)
                 menuItem.isEnabled = true
                 menuActions.append(menuAction)
-
-                let attrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
-                ]
-                menuItem.attributedTitle = NSAttributedString(string: display, attributes: attrs)
             } else {
                 menuItem.isEnabled = false
             }
@@ -183,18 +188,21 @@ class OverlayManager {
             let footerItem = NSMenuItem(title: footer, action: nil, keyEquivalent: "")
             footerItem.isEnabled = false
             let footerAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
+                .font: NSFont.systemFont(ofSize: 11),
                 .foregroundColor: NSColor.tertiaryLabelColor,
             ]
             footerItem.attributedTitle = NSAttributedString(string: footer, attributes: footerAttrs)
             menu.addItem(footerItem)
         }
 
-        // Pop up below the status bar area
+        // Pop up below the mouse click (in status bar)
         if let window = NSApp.mainWindow ?? NSApp.windows.first,
            let contentView = window.contentView {
-            // Position at top-left of content area (below title bar + status bar)
-            let point = NSPoint(x: 10, y: contentView.bounds.height - 28)
+            // Convert mouse location to content view coordinates
+            let mouseInWindow = window.mouseLocationOutsideOfEventStream
+            let mouseInContent = contentView.convert(mouseInWindow, from: nil)
+            // Anchor just below the status bar (top of content area minus status bar height)
+            let point = NSPoint(x: mouseInContent.x, y: contentView.bounds.height - 28)
             menu.popUp(positioning: nil, at: point, in: contentView)
         }
 
