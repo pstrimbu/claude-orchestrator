@@ -74,7 +74,39 @@ if [ -n "$NEWEST_SRC" ]; then
   (cd "$APP_DIR" && swift build 2>&1)
 fi
 
-# Launch in background
+# --- Create a temporary .app bundle so macOS shows the project name in the dock ---
+PROJECT_NAME="$(basename "$PROJECT_PATH")"
+APP_BUNDLE="$PROJECT_PATH/.orch/$PROJECT_NAME.app"
+BUNDLE_MACOS="$APP_BUNDLE/Contents/MacOS"
+
+mkdir -p "$BUNDLE_MACOS"
+
+# Symlink the real binary into the bundle
+ln -sf "$BINARY" "$BUNDLE_MACOS/orch"
+
+# Write Info.plist with the project name as the display name
+cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>orch</string>
+  <key>CFBundleName</key>
+  <string>$PROJECT_NAME</string>
+  <key>CFBundleDisplayName</key>
+  <string>$PROJECT_NAME</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.orch.$PROJECT_NAME</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>LSUIElement</key>
+  <false/>
+</dict>
+</plist>
+PLIST
+
+# Launch via open so macOS registers the bundle name for the dock
 LOGFILE="$PROJECT_PATH/.orch/orch.log"
-"$BINARY" "$PROJECT_PATH" ${ARGS[@]+"${ARGS[@]}"} >"$LOGFILE" 2>&1 &
+open "$APP_BUNDLE" --args "$PROJECT_PATH" ${ARGS[@]+"${ARGS[@]}"} 2>"$LOGFILE" &
 disown
