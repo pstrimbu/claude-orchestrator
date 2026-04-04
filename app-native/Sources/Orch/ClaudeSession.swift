@@ -11,7 +11,7 @@ class ClaudeSession {
     private(set) var lastActivity = Date()
     var masterFd: Int32 = -1
 
-    var onData: ((String) -> Void)?
+    var onData: ((Data) -> Void)?
     var onExit: ((Int32) -> Void)?
 
     init(projectPath: String, cols: Int, rows: Int, mode: SessionMode) {
@@ -52,7 +52,9 @@ class ClaudeSession {
             // Child process
             chdir(projectPath)
 
-            // Set up environment
+            // Set up environment — when launched via `open`, inherit minimal
+            // launchd env. Resolve the user's login shell PATH so claude can
+            // find git, node, and other tools.
             setenv("TERM", "xterm-256color", 1)
             setenv("COLUMNS", String(cols), 1)
             setenv("LINES", String(rows), 1)
@@ -87,11 +89,9 @@ class ClaudeSession {
                 if bytesRead <= 0 { break }
 
                 let data = Data(bytes: buffer, count: bytesRead)
-                if let str = String(data: data, encoding: .utf8) {
-                    DispatchQueue.main.async {
-                        self?.lastActivity = Date()
-                        self?.onData?(str)
-                    }
+                DispatchQueue.main.async {
+                    self?.lastActivity = Date()
+                    self?.onData?(data)
                 }
             }
 

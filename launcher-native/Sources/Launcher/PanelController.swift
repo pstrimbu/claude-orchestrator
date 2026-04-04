@@ -20,6 +20,7 @@ class PanelController {
 
     private var dockedEdge: DockedEdge = .right
     private var anchorY: CGFloat = 80
+    private var pinnedScreenIndex: Int = 0  // index into NSScreen.screens
 
     private var collapseTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
@@ -90,10 +91,11 @@ class PanelController {
         }
         dockedEdge = DockedEdge(rawValue: edge) ?? .right
         anchorY = CGFloat(y)
+        pinnedScreenIndex = dict["screen"] as? Int ?? 0
     }
 
     private func savePosition() {
-        let dict: [String: Any] = ["edge": dockedEdge.rawValue, "y": anchorY]
+        let dict: [String: Any] = ["edge": dockedEdge.rawValue, "y": anchorY, "screen": pinnedScreenIndex]
         if let data = try? JSONSerialization.data(withJSONObject: dict) {
             try? FileManager.default.createDirectory(at: ConfigStore.configDir, withIntermediateDirectories: true)
             try? data.write(to: positionFile)
@@ -102,8 +104,16 @@ class PanelController {
 
     // MARK: - Layout
 
+    private var pinnedScreen: NSScreen {
+        let screens = NSScreen.screens
+        if pinnedScreenIndex < screens.count {
+            return screens[pinnedScreenIndex]
+        }
+        return NSScreen.main ?? screens[0]
+    }
+
     func layoutPanel(expanded: Bool) {
-        guard let screen = NSScreen.main else { return }
+        let screen = pinnedScreen
         let screenFrame = screen.frame
         let width = expanded ? expandedWidth : collapsedWidth
         let height = viewModel.targetHeight()
@@ -274,9 +284,12 @@ class PanelController {
     }
 
     private func endDrag() {
-        guard let screen = NSScreen.main else { return }
-        let screenFrame = screen.frame
         let mouseLocation = NSEvent.mouseLocation
+        // Pin to whichever screen the mouse is on
+        let screens = NSScreen.screens
+        pinnedScreenIndex = screens.firstIndex(where: { $0.frame.contains(mouseLocation) }) ?? 0
+        let screen = pinnedScreen
+        let screenFrame = screen.frame
 
         // Use mouse position (not panel frame) to decide edge snapping,
         // since the panel is a thin strip that may not reach the edge

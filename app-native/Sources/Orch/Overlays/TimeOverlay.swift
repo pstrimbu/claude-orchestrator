@@ -25,19 +25,10 @@ func showTimeOverlay(overlay: OverlayManager, clockify: ClockifyService, onUpdat
             label: "[F] Flush to Clockify",
             shortcut: "f",
             action: {
-                overlay.setLoading(true)
+                overlay.close()
                 Task {
-                    let result = try? await clockify.flush()
-                    await MainActor.run {
-                        overlay.setLoading(false)
-                        if result?.success == true {
-                            overlay.showMessage("Flushed! Entry: \(result?.entryId ?? "")")
-                        } else {
-                            overlay.showMessage("Failed: \(result?.error ?? "unknown")")
-                        }
-                        overlay.updateItems(buildItems())
-                        onUpdate()
-                    }
+                    _ = try? await clockify.flush()
+                    await MainActor.run { onUpdate() }
                 }
             }
         ))

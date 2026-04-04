@@ -37,4 +37,5 @@ if [ "$needs_build" = true ]; then
   cp "$LAUNCHER_DIR/.build/release/orch-launcher" "$BINARY"
 fi
 
-exec "$BINARY"
+nohup "$BINARY" &>/dev/null &
+disown

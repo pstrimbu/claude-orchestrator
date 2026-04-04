@@ -2,11 +2,22 @@ import AppKit
 import SwiftUI
 import SwiftTerm
 
+class OrchWindow: NSWindow {
+    var onKeyEquivalent: ((NSEvent) -> Bool)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if let handler = onKeyEquivalent, handler(event) {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     let projectPath: String
     let sessionMode: SessionMode
 
-    private var window: NSWindow!
+    private var window: OrchWindow!
     private var config: Config!
     private var session: ClaudeSession!
     private var clockify: ClockifyService!
@@ -158,6 +169,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         if let font = NSFont(name: "Menlo", size: 13) {
             terminalView.font = font
         }
+        terminalView.allowMouseReporting = false
 
         // Status bar
         statusBarModel.onSectionClick = { [weak self] section in
@@ -167,15 +179,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         statusBar.translatesAutoresizingMaskIntoConstraints = false
 
         // Window — create first so we can constrain to its contentView
-        window = NSWindow(
+        window = OrchWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
             styleMask: [.titled, .closable, .resizable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
+        window.onKeyEquivalent = { [weak self] event in
+            guard event.modifierFlags.contains(.command) else { return false }
+            switch event.charactersIgnoringModifiers {
+            case "n":
+                self?.handleCmdN()
+                return true
+            default:
+                return false
+            }
+        }
         window.title = appName
         window.center()
         window.backgroundColor = NSColor(red: 0x1e/255, green: 0x1e/255, blue: 0x1e/255, alpha: 1)
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.titleVisibility = .visible
 
         // Use frame-based layout with autoresizing masks
         let container = window.contentView!
@@ -216,6 +240,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         let editMenuItem = NSMenuItem()
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
+
+        // Window menu
+        let windowMenu = NSMenu(title: "Window")
+        let newWindowItem = NSMenuItem(title: "New Window", action: #selector(handleCmdN), keyEquivalent: "n")
+        windowMenu.addItem(newWindowItem)
+        let windowMenuItem = NSMenuItem()
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
 
         NSApp.mainMenu = mainMenu
 
@@ -324,6 +356,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         return false
     }
 
+    @objc private func handleCmdN() {
+        // Spawn a new orch window for the same project, offset from current position
+        let frame = window.frame
+        let offsetX = Int(frame.origin.x) + 30
+        let offsetY = Int(frame.origin.y) - 30
+        let w = Int(frame.width)
+        let h = Int(frame.height)
+        let cmdPath = config.orchDir + "/new-window-pos.json"
+        let pos: [String: Int] = ["x": offsetX, "y": offsetY, "w": w, "h": h]
+        if let data = try? JSONSerialization.data(withJSONObject: pos) {
+            try? data.write(to: URL(fileURLWithPath: cmdPath))
+        }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+        proc.arguments = ["-c", "orch '\(projectPath)'"]
+        proc.currentDirectoryURL = URL(fileURLWithPath: projectPath)
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try? proc.run()
+    }
+
     private func handleF5() {
         saveScrollback()
         if clockify.recording { Task { try? await clockify.flush() } }
@@ -372,25 +425,38 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         session.spawn()
     }
 
-    private func handleSessionData(_ data: String) {
-        // Only strip clear-scrollback; pass everything else through to SwiftTerm
-        let processed = data.replacingOccurrences(of: "\u{1b}[3J", with: "")
+    private func handleSessionData(_ data: Data) {
+        // Strip clear-scrollback sequence (ESC[3J) at byte level
+        var bytes = [UInt8](data)
+        let clearSeq: [UInt8] = [0x1b, 0x5b, 0x33, 0x4a]  // \x1b[3J
+        while let range = bytes.firstRange(of: clearSeq) {
+            bytes.removeSubrange(range)
+        }
 
-        appendScrollback(processed)
-        lastPtyOutputTime = Date()
-        terminalView.feed(text: processed)
-        clockify.onActivity()
+        // Feed raw bytes to SwiftTerm — avoids UTF-8 boundary issues
+        if !bytes.isEmpty {
+            appendScrollback(bytes)
+            lastPtyOutputTime = Date()
+            terminalView.feed(byteArray: bytes[...])
+            clockify.onActivity()
+        }
     }
 
     private func handleSessionExit(_ code: Int32) {
         Log.log("session exited with code \(code)")
-        terminalView.feed(text: "\r\n\u{1b}[90m[Session exited with code \(code)]\u{1b}[0m\r\n")
+        let msg = "\r\n\u{1b}[90m[Session exited with code \(code)]\u{1b}[0m\r\n"
+        terminalView.feed(byteArray: [UInt8](msg.utf8)[...])
     }
 
     // MARK: - Scrollback
 
-    private func appendScrollback(_ data: String) {
-        scrollbackBuf += data
+    private func appendScrollback(_ bytes: [UInt8]) {
+        if let str = String(bytes: bytes, encoding: .utf8) {
+            scrollbackBuf += str
+        } else {
+            // Lossy conversion for scrollback — replace invalid bytes
+            scrollbackBuf += String(decoding: bytes, as: UTF8.self)
+        }
         if scrollbackBuf.count > scrollbackMax * 3 / 2 {
             scrollbackBuf = String(scrollbackBuf.suffix(scrollbackMax))
         }
@@ -410,7 +476,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         scrollbackBuf = data
         let clean = sanitizeScrollback(data)
         if !clean.isEmpty {
-            terminalView.feed(text: clean)
+            terminalView.feed(byteArray: [UInt8](clean.utf8)[...])
         }
     }
 

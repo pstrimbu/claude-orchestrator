@@ -34,6 +34,25 @@ projectPath = (projectPath as NSString).standardizingPath
 
 print("[orch] projectPath: \(projectPath)")
 
+// Ensure we have a full user PATH — `open` launches with minimal launchd env
+if let currentPath = ProcessInfo.processInfo.environment["PATH"],
+   !currentPath.contains("/opt/homebrew") || !currentPath.contains(".local/bin") {
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+    proc.arguments = ["-lc", "echo $PATH"]
+    let pipe = Pipe()
+    proc.standardOutput = pipe
+    proc.standardError = FileHandle.nullDevice
+    if let _ = try? proc.run() {
+        proc.waitUntilExit()
+        if let resolved = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !resolved.isEmpty {
+            setenv("PATH", resolved, 1)
+        }
+    }
+}
+
 // Load .env files
 EnvLoader.load(path: projectPath + "/.env")
 let repoDir = (CommandLine.arguments[0] as NSString).deletingLastPathComponent + "/../.."

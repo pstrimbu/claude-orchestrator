@@ -59,6 +59,21 @@ enum SystemUtils {
         return kill(pid, 0) == 0
     }
 
+    /// Check if a PID belongs to an orch process
+    static func isOrchProcess(_ pid: Int32) -> Bool {
+        let cmd = "ps -p \(pid) -o command= 2>/dev/null"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", cmd]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        try? process.run()
+        process.waitUntilExit()
+        let stdout = (String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "").lowercased()
+        return stdout.contains("orch")
+    }
+
     /// Get running PID for a project path
     static func getRunningPid(projectPath: String) -> Int32? {
         // Check PID file first
@@ -66,12 +81,17 @@ enum SystemUtils {
         if let content = try? String(contentsOfFile: pidFile, encoding: .utf8),
            let pid = Int32(content.trimmingCharacters(in: .whitespacesAndNewlines)),
            pid > 0, isProcessRunning(pid) {
-            return pid
+            // Verify it's actually an orch process, not a recycled PID
+            if isOrchProcess(pid) {
+                return pid
+            }
+            // Stale PID file — clean it up
+            try? FileManager.default.removeItem(atPath: pidFile)
         }
 
         // Fallback: ps
         let projName = (projectPath as NSString).lastPathComponent
-        let cmd = "ps axo pid,command | grep -E 'orch-\(projName)|Electron.*\(projectPath)' | grep -v grep | grep -v Helper | head -1"
+        let cmd = "ps axo pid,command | grep -E 'orch-\(projName)' | grep -v grep | grep -v Helper | head -1"
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", cmd]

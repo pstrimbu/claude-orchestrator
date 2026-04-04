@@ -108,5 +108,5 @@ PLIST
 
 # Launch via open so macOS registers the bundle name for the dock
 LOGFILE="$PROJECT_PATH/.orch/orch.log"
-open "$APP_BUNDLE" --args "$PROJECT_PATH" ${ARGS[@]+"${ARGS[@]}"} 2>"$LOGFILE" &
+open -n "$APP_BUNDLE" --args "$PROJECT_PATH" ${ARGS[@]+"${ARGS[@]}"} 2>"$LOGFILE" &
 disown
