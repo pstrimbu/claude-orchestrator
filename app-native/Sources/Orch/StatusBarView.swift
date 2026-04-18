@@ -11,6 +11,7 @@ struct StatusBarData {
     var currentIssueTitle: String?
     var gitBranch = ""
     var gitDirty = false
+    var sessionLabel = ""
     var lastCommand: String?
 }
 
@@ -70,6 +71,18 @@ struct StatusBarView: View {
                     Text(gitText)
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundColor(Color(hex: 0xb0b0b0))
+                }
+            }
+
+            separator
+
+            // Sessions
+            sectionButton("sessions") {
+                HStack(spacing: 6) {
+                    Text(model.data.sessionLabel.isEmpty ? "Session" : model.data.sessionLabel)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundColor(Color(hex: 0xb0b0b0))
+                        .lineLimit(1)
                 }
             }
 

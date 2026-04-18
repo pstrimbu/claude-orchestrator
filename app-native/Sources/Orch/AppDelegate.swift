@@ -23,6 +23,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     private var clockify: ClockifyService!
     private var tracker: TrackerService!
     private var history: CommandHistoryService!
+    private var sessionStore: SessionStore!
     private var overlay = OverlayManager()
     private var statusBarState = StatusBarState()
     private var statusBarModel = StatusBarModel()
@@ -60,6 +61,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         clockify = ClockifyService(config: config)
         tracker = createTracker(config: config)
         history = CommandHistoryService(orchDir: config.orchDir)
+        sessionStore = SessionStore(projectPath: projectPath)
 
         // Restore last command from history
         if let last = history.getRecent(1).last {
@@ -74,32 +76,42 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             let cmds = Array(Set(entries.map(\.cmd))).suffix(20)
             let cmdList = cmds.joined(separator: "\n")
 
-            guard let apiKey = self.config.anthropicApiKey else {
-                self.history.markFlushed()
-                return cmds.suffix(5).joined(separator: "; ")
-            }
-
+            // Use AWS Bedrock (Claude Haiku) for AI summary via boto3
             do {
-                let url = URL(string: "https://api.anthropic.com/v1/messages")!
-                var request = URLRequest(url: url)
-                request.httpMethod = "POST"
-                request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-                request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-                request.setValue("application/json", forHTTPHeaderField: "content-type")
-                let body: [String: Any] = [
-                    "model": "claude-haiku-4-5-20251001",
-                    "max_tokens": 100,
-                    "messages": [["role": "user", "content": "Summarize this developer's work session in 1-2 brief phrases for a time tracking entry (max 120 chars). Only output the summary, nothing else.\n\nCommands run:\n\(cmdList)"]],
-                ]
-                request.httpBody = try JSONSerialization.data(withJSONObject: body)
-                let (data, response) = try await URLSession.shared.data(for: request)
-                if let http = response as? HTTPURLResponse, http.statusCode == 200,
-                   let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let content = (json["content"] as? [[String: Any]])?.first,
-                   let text = (content["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                   !text.isEmpty {
-                    self.history.markFlushed()
-                    return text.count > 120 ? String(text.prefix(117)) + "..." : text
+                let escapedCmds = cmdList.replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: "'", with: "\\'")
+                    .replacingOccurrences(of: "\n", with: "\\n")
+                let pyScript = """
+                import boto3, json, sys
+                c = boto3.client('bedrock-runtime', region_name='us-east-1')
+                r = c.invoke_model(
+                    modelId='us.anthropic.claude-haiku-4-5-20251001-v1:0',
+                    contentType='application/json',
+                    accept='application/json',
+                    body=json.dumps({
+                        'anthropic_version': 'bedrock-2023-05-31',
+                        'max_tokens': 100,
+                        'messages': [{'role': 'user', 'content': 'Summarize this developer\\'s work session in 1-2 brief phrases for a time tracking entry (max 120 chars). Only output the summary, nothing else.\\n\\nCommands run:\\n\(escapedCmds)'}]
+                    })
+                )
+                body = json.loads(r['body'].read())
+                print(body['content'][0]['text'].strip())
+                """
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+                proc.arguments = ["-c", pyScript]
+                let pipe = Pipe()
+                proc.standardOutput = pipe
+                proc.standardError = FileHandle.nullDevice
+                try proc.run()
+                proc.waitUntilExit()
+                if proc.terminationStatus == 0 {
+                    let text = (String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !text.isEmpty {
+                        self.history.markFlushed()
+                        return text.count > 120 ? String(text.prefix(117)) + "..." : text
+                    }
                 }
             } catch {}
 
@@ -292,15 +304,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             }
         }
 
-        // Forward to Claude PTY
-        if session?.running == true {
-            let dataToWrite = Data(bytes)
-            dataToWrite.withUnsafeBytes { ptr in
-                if let base = ptr.baseAddress {
-                    _ = write(session.masterFd, base, bytes.count)
-                }
-            }
-        }
+        // Forward to Claude PTY (off main thread — see ClaudeSession.writeQueue)
+        session?.write(bytes)
     }
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
@@ -340,6 +345,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         // F1: \x1bOP — open project panel
         if data == "\u{1b}OP" {
             openSection("project")
+            return true
+        }
+        // F2: \x1bOQ — open sessions panel
+        if data == "\u{1b}OQ" {
+            openSection("sessions")
             return true
         }
         // F5: \x1b[15~
@@ -530,6 +540,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             currentIssueTitle: statusBarState.currentIssue?.title,
             gitBranch: statusBarState.gitBranch,
             gitDirty: statusBarState.gitDirty,
+            sessionLabel: sessionLabel(),
             lastCommand: lastCommand
         )
     }
@@ -552,6 +563,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         case "git":
             showGitOverlay(overlay: overlay, config: config, session: session,
                            onUpdate: { [weak self] in self?.sendStatusUpdate() })
+        case "sessions":
+            showSessionsOverlay(
+                overlay: overlay,
+                sessionStore: sessionStore,
+                session: session,
+                currentSessionId: sessionStore.currentSessionId(childPid: session.childPid),
+                onSessionSwitch: { [weak self] mode in self?.switchSession(mode) },
+                onUpdate: { [weak self] in self?.sendStatusUpdate() }
+            )
         case "history":
             showHistoryOverlay(overlay: overlay, history: history, session: session,
                                onUpdate: { [weak self] in self?.sendStatusUpdate() })
@@ -564,6 +584,33 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     private func refreshTracker() {
         config.reload()
         tracker = createTracker(config: config)
+    }
+
+    private func sessionLabel() -> String {
+        guard let id = sessionStore.currentSessionId(childPid: session.childPid) else { return "" }
+        return String(id.prefix(8))
+    }
+
+    private func switchSession(_ mode: SessionMode) {
+        saveScrollback()
+        session?.kill()
+        // Clear terminal and scrollback
+        terminalView.feed(byteArray: [UInt8]("\u{1b}c".utf8)[...])
+        scrollbackBuf = ""
+        let terminal = terminalView.getTerminal()
+        session = ClaudeSession(
+            projectPath: projectPath,
+            cols: terminal.cols,
+            rows: terminal.rows,
+            mode: mode
+        )
+        session.onData = { [weak self] data in
+            self?.handleSessionData(data)
+        }
+        session.onExit = { [weak self] code in
+            self?.handleSessionExit(code)
+        }
+        session.spawn()
     }
 
     // MARK: - Window commands (SIGUSR2)

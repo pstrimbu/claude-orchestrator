@@ -53,14 +53,10 @@ func showPromptBuilderOverlay(overlay: OverlayManager, config: Config, session: 
             onEdit: { promptText = $0 },
             onSubmit: { value in
                 guard !value.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-                guard let apiKey = config.anthropicApiKey else {
-                    overlay.showMessage("Set ANTHROPIC_API_KEY in .env to enable review")
-                    return
-                }
                 overlay.setLoading(true)
                 Task {
                     do {
-                        let r = try await reviewPrompt(apiKey: apiKey, promptText: value)
+                        let r = try await reviewPrompt(promptText: value)
                         await MainActor.run {
                             review = r
                             promptText = value
@@ -100,14 +96,10 @@ func showPromptBuilderOverlay(overlay: OverlayManager, config: Config, session: 
                 overlay.showMessage("Type a prompt first")
                 return
             }
-            guard let apiKey = config.anthropicApiKey else {
-                overlay.showMessage("Set ANTHROPIC_API_KEY in .env")
-                return
-            }
             overlay.setLoading(true)
             Task {
                 do {
-                    let r = try await reviewPrompt(apiKey: apiKey, promptText: promptText)
+                    let r = try await reviewPrompt(promptText: promptText)
                     await MainActor.run {
                         review = r
                         overlay.updateItems(buildItems())
@@ -141,32 +133,49 @@ func showPromptBuilderOverlay(overlay: OverlayManager, config: Config, session: 
     ))
 }
 
-private func reviewPrompt(apiKey: String, promptText: String) async throws -> PromptReview {
-    let url = URL(string: "https://api.anthropic.com/v1/messages")!
-    var request = URLRequest(url: url)
-    request.httpMethod = "POST"
-    request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-    request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-    request.setValue("application/json", forHTTPHeaderField: "content-type")
+private func reviewPrompt(promptText: String) async throws -> PromptReview {
+    let escapedSystem = reviewSystem.replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "'", with: "\\'")
+        .replacingOccurrences(of: "\n", with: "\\n")
+    let escapedPrompt = promptText.replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "'", with: "\\'")
+        .replacingOccurrences(of: "\n", with: "\\n")
 
-    let body: [String: Any] = [
-        "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 1500,
-        "system": reviewSystem,
-        "messages": [["role": "user", "content": "Review this prompt:\n\n\(promptText)"]],
-    ]
-    request.httpBody = try JSONSerialization.data(withJSONObject: body)
+    let pyScript = """
+    import boto3, json, sys
+    c = boto3.client('bedrock-runtime', region_name='us-east-1')
+    r = c.invoke_model(
+        modelId='us.anthropic.claude-haiku-4-5-20251001-v1:0',
+        contentType='application/json',
+        accept='application/json',
+        body=json.dumps({
+            'anthropic_version': 'bedrock-2023-05-31',
+            'max_tokens': 1500,
+            'system': '\(escapedSystem)',
+            'messages': [{'role': 'user', 'content': 'Review this prompt:\\n\\n\(escapedPrompt)'}]
+        })
+    )
+    body = json.loads(r['body'].read())
+    print(body['content'][0]['text'].strip())
+    """
 
-    let (data, response) = try await URLSession.shared.data(for: request)
-    guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-        throw NSError(domain: "API", code: (response as? HTTPURLResponse)?.statusCode ?? 0)
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+    proc.arguments = ["-c", pyScript]
+    let pipe = Pipe()
+    let errPipe = Pipe()
+    proc.standardOutput = pipe
+    proc.standardError = errPipe
+    try proc.run()
+    proc.waitUntilExit()
+
+    guard proc.terminationStatus == 0 else {
+        let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "unknown error"
+        throw NSError(domain: "Bedrock", code: 1, userInfo: [NSLocalizedDescriptionKey: err])
     }
 
-    guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let content = (json["content"] as? [[String: Any]])?.first,
-          let text = content["text"] as? String else {
-        throw NSError(domain: "API", code: 0, userInfo: [NSLocalizedDescriptionKey: "Empty response"])
-    }
+    let text = (String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
 
     let cleaned = text
         .replacingOccurrences(of: "^```(?:json)?\\s*\\n?", with: "", options: .regularExpression)

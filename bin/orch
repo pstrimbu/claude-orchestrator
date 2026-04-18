@@ -81,8 +81,11 @@ BUNDLE_MACOS="$APP_BUNDLE/Contents/MacOS"
 
 mkdir -p "$BUNDLE_MACOS"
 
-# Symlink the real binary into the bundle
-ln -sf "$BINARY" "$BUNDLE_MACOS/orch"
+# Copy the real binary into the bundle (not a symlink — codesign requires a regular file
+# so TCC can record a stable designated requirement for Camera/Mic permissions).
+if [ ! "$BINARY" -ef "$BUNDLE_MACOS/orch" ]; then
+  cp -f "$BINARY" "$BUNDLE_MACOS/orch"
+fi
 
 # Write Info.plist with the project name as the display name
 cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
@@ -102,9 +105,17 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
   <string>APPL</string>
   <key>LSUIElement</key>
   <false/>
+  <key>NSCameraUsageDescription</key>
+  <string>$PROJECT_NAME uses the camera for computer-vision work performed by Claude Code sessions.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>$PROJECT_NAME may access the microphone for projects that involve audio capture.</string>
 </dict>
 </plist>
 PLIST
+
+# Ad-hoc sign the bundle so TCC can prompt and remember permissions
+# (NSCameraUsageDescription has no effect on unsigned Mach-O binaries).
+codesign --force --sign - "$APP_BUNDLE" 2>/dev/null || true
 
 # Launch via open so macOS registers the bundle name for the dock
 LOGFILE="$PROJECT_PATH/.orch/orch.log"

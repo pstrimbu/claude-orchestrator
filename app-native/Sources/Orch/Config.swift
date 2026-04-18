@@ -109,7 +109,6 @@ class Config {
         loadProjectJson().tracker?.title_prefix ?? "[AI]"
     }
 
-    var anthropicApiKey: String? { ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] }
     var clockifyApiKey: String? { ProcessInfo.processInfo.environment["CLOCKIFY_API_KEY"] }
 
     var clockifyWorkspaceId: String { "REDACTED-CLOCKIFY-WORKSPACE-ID" }

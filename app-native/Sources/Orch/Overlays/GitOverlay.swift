@@ -36,6 +36,15 @@ func showGitOverlay(overlay: OverlayManager, config: Config, session: ClaudeSess
             items.append(OverlayItem(label: "", dimmed: true))
         }
 
+        let log = git("git log --oneline -5") ?? ""
+        if !log.isEmpty {
+            items.append(OverlayItem(label: "Recent Commits:", dimmed: true))
+            for line in log.components(separatedBy: .newlines) where !line.isEmpty {
+                items.append(OverlayItem(label: "  \(line)", dimmed: true))
+            }
+            items.append(OverlayItem(label: "", dimmed: true))
+        }
+
         items.append(OverlayItem(label: "Ask Claude to Commit", action: {
             session.write("/commit\n")
             overlay.close()

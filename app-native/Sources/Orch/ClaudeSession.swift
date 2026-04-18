@@ -2,7 +2,7 @@ import Foundation
 
 class ClaudeSession {
     private var fileHandle: FileHandle?
-    private var childPid: pid_t = 0
+    private(set) var childPid: pid_t = 0
     private(set) var running = false
     private var mode: SessionMode
     private let projectPath: String
@@ -10,6 +10,11 @@ class ClaudeSession {
     private(set) var rows: Int
     private(set) var lastActivity = Date()
     var masterFd: Int32 = -1
+
+    // Serial queue for PTY writes. Writing to the PTY master on the main thread
+    // can block when claude isn't draining stdin fast enough (busy tool call,
+    // big output) — which freezes the UI. Keep writes off the main thread.
+    private let writeQueue = DispatchQueue(label: "orch.pty.write", qos: .userInitiated)
 
     var onData: ((Data) -> Void)?
     var onExit: ((Int32) -> Void)?
@@ -121,9 +126,24 @@ class ClaudeSession {
 
     func write(_ data: String) {
         guard running, masterFd >= 0 else { return }
-        data.withCString { ptr in
-            let len = strlen(ptr)
-            _ = Foundation.write(masterFd, ptr, len)
+        let fd = masterFd
+        writeQueue.async {
+            data.withCString { ptr in
+                let len = strlen(ptr)
+                _ = Foundation.write(fd, ptr, len)
+            }
+        }
+    }
+
+    func write(_ bytes: [UInt8]) {
+        guard running, masterFd >= 0, !bytes.isEmpty else { return }
+        let fd = masterFd
+        writeQueue.async {
+            bytes.withUnsafeBufferPointer { buf in
+                if let base = buf.baseAddress {
+                    _ = Foundation.write(fd, base, buf.count)
+                }
+            }
         }
     }
 
