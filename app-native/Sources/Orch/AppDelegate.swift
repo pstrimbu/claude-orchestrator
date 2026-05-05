@@ -39,9 +39,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     private var sigUsr1Source: DispatchSourceSignal?
     private var sigUsr2Source: DispatchSourceSignal?
 
+    // App Nap opt-out — keeps SwiftTerm redrawing in real time when window
+    // is not frontmost. Without this, macOS throttles the view's draw loop
+    // and PTY output / typed input only repaint after a click.
+    private var activityToken: NSObjectProtocol?
+
     // Scrollback
     private let scrollbackMax = 256 * 1024
     private var scrollbackBuf = ""
+
+    // Scroll-pinning: when the user scrolls up, hold the viewport at that
+    // absolute row through subsequent feeds instead of snapping to bottom.
+    private var userScrolledUp = false
+    private var feeding = false
 
     init(projectPath: String, sessionMode: SessionMode) {
         self.projectPath = projectPath
@@ -53,6 +63,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         let projectName = (projectPath as NSString).lastPathComponent
         let appName = "orch \u{2014} \(projectName)"
         NSApp.setActivationPolicy(.regular)
+
+        activityToken = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
+            reason: "Interactive terminal session — realtime PTY updates"
+        )
 
         // Initialize services
         config = Config(projectPath: projectPath)
@@ -318,7 +333,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
 
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
 
-    func scrolled(source: TerminalView, position: Double) {}
+    func scrolled(source: TerminalView, position: Double) {
+        // Ignore callbacks fired by our own feed (auto-snap to bottom).
+        // Only genuine user scrolls update the pin state.
+        if feeding { return }
+        userScrolledUp = position < 1.0 - 1e-6
+    }
 
     func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
         if let url = URL(string: link) {
@@ -447,7 +467,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         if !bytes.isEmpty {
             appendScrollback(bytes)
             lastPtyOutputTime = Date()
+
+            // Save absolute viewport row before feed so we can restore it if
+            // the user is reading scrollback. SwiftTerm otherwise snaps yDisp
+            // back to yBase on every linefeed.
+            let savedYDisp = terminalView.getTerminal().buffer.yDisp
+            let wasScrolledUp = userScrolledUp
+
+            feeding = true
             terminalView.feed(byteArray: bytes[...])
+            feeding = false
+
+            if wasScrolledUp {
+                terminalView.scrollTo(row: savedYDisp)
+            }
+
+            // Force synchronous repaint on this runloop tick. SwiftTerm's
+            // feed() calls setNeedsDisplay internally, but AppKit can defer
+            // the actual paint to the next event-driven frame — which makes
+            // typed input invisible until a mouse click flushes the queue.
+            terminalView.displayIfNeeded()
+
             clockify.onActivity()
         }
     }
@@ -456,6 +496,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         Log.log("session exited with code \(code)")
         let msg = "\r\n\u{1b}[90m[Session exited with code \(code)]\u{1b}[0m\r\n"
         terminalView.feed(byteArray: [UInt8](msg.utf8)[...])
+        terminalView.displayIfNeeded()
     }
 
     // MARK: - Scrollback
@@ -487,6 +528,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         let clean = sanitizeScrollback(data)
         if !clean.isEmpty {
             terminalView.feed(byteArray: [UInt8](clean.utf8)[...])
+            terminalView.displayIfNeeded()
         }
     }
 
@@ -596,6 +638,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         session?.kill()
         // Clear terminal and scrollback
         terminalView.feed(byteArray: [UInt8]("\u{1b}c".utf8)[...])
+        terminalView.displayIfNeeded()
         scrollbackBuf = ""
         let terminal = terminalView.getTerminal()
         session = ClaudeSession(
@@ -664,6 +707,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     // MARK: - Cleanup
 
     func applicationWillTerminate(_ notification: Notification) {
+        if let token = activityToken {
+            ProcessInfo.processInfo.endActivity(token)
+            activityToken = nil
+        }
         if clockify?.recording == true {
             Task { try? await clockify.flush() }
         }
@@ -697,4 +744,3 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         } catch { return nil }
     }
 }
-
