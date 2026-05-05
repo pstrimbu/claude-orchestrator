@@ -1,0 +1,28 @@
+# Standard pre-commit config — secret-scan + sanity checks
+# Drop into any repo as .pre-commit-config.yaml, then run: pre-commit install
+#
+# Detects: AWS keys, Stripe/Twilio/OpenAI/Slack tokens, private keys, JWTs, generic high-entropy strings
+# Source of truth for this template: ~/dev/aws-1321-account/dotfiles/pre-commit-config-template.yaml
+
+repos:
+  # gitleaks — comprehensive secret detection (AWS, Stripe, Twilio, OpenAI, JWTs, generic, etc.)
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  # built-in pre-commit hygiene checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: detect-private-key            # extra layer for SSH/TLS private keys
+      - id: detect-aws-credentials        # extra layer for AWS — catches what gitleaks may not
+        args: [--allow-missing-credentials]
+      - id: check-added-large-files       # blocks accidentally committing huge files
+        args: ['--maxkb=5000']
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+        args: [--unsafe]                  # allow custom tags (CloudFormation, GitHub Actions, etc.)
+      - id: check-json
