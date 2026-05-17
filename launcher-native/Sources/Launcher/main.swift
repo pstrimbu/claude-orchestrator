@@ -30,8 +30,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Force dark mode
         NSApp.appearance = NSAppearance(named: .darkAqua)
 
-        // Hide dock icon
-        NSApp.setActivationPolicy(.accessory)
+        NSApp.setActivationPolicy(.regular)
 
         let viewModel = LauncherViewModel()
         panelController = PanelController(viewModel: viewModel)

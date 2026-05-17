@@ -356,10 +356,7 @@ class PanelController {
                     self?.viewModel.addProject(path: url.path)
                 }
             }
-            // Revert to accessory app (no dock icon)
-            DispatchQueue.main.async {
-                NSApp.setActivationPolicy(.accessory)
-            }
+            // No revert needed — app stays .regular so the Dock icon persists.
         }
     }
 }
