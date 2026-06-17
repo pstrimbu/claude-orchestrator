@@ -43,6 +43,7 @@ struct AppStatus: Identifiable, Equatable {
     var portalStartCmd: String?
     var uiRunning: Bool
     var apiRunning: Bool
+    var pathMissing: Bool = false
 
     var id: String { sessionPath ?? portalName ?? name }
 }

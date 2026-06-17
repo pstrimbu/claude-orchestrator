@@ -179,11 +179,12 @@ struct ProjectRowView: View {
                 statusDot
                 Text(app.name)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.fg)
+                    .foregroundColor(app.pathMissing ? .dim : .fg)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .help(app.pathMissing ? "Directory not found: \(app.sessionPath ?? app.portalPath ?? app.name)" : app.name)
 
             // Port badges
             if let uiPort = app.uiPort, let apiPort = app.apiPort {
@@ -215,7 +216,7 @@ struct ProjectRowView: View {
         let portalRunning = app.uiRunning || app.apiRunning
         let running = hasSession ? app.sessionRunning : portalRunning
         Circle()
-            .fill(running ? Color.active : Color.error2)
+            .fill(app.pathMissing ? Color.dim.opacity(0.4) : (running ? Color.active : Color.error2))
             .frame(width: 8, height: 8)
     }
 
@@ -223,10 +224,11 @@ struct ProjectRowView: View {
     var actionButtons: some View {
         let hasSession = app.sessionPath != nil
         let hasPortal = app.portalName != nil
-        let portalRunning = app.uiRunning || app.apiRunning
 
         // Open/Focus
-        if hasSession {
+        if app.pathMissing {
+            ActionButton(label: "Missing", style: .disabled) {}
+        } else if hasSession {
             if app.sessionRunning, let pid = app.sessionPid {
                 ActionButton(label: "Focus", style: .focus) {
                     viewModel.focusProject(pid: pid)
@@ -363,7 +365,7 @@ struct APIPortBadge: View {
 // MARK: - Action Button
 
 enum ActionButtonStyle {
-    case focus, open, stop
+    case focus, open, stop, disabled
 }
 
 struct ActionButton: View {
@@ -376,6 +378,7 @@ struct ActionButton: View {
         case .focus: return .accent2
         case .open: return .active
         case .stop: return .error2
+        case .disabled: return .dim.opacity(0.4)
         }
     }
 
@@ -384,6 +387,7 @@ struct ActionButton: View {
         case .focus: return .accent2.opacity(0.3)
         case .open: return .active.opacity(0.3)
         case .stop: return .error2.opacity(0.2)
+        case .disabled: return .dim.opacity(0.2)
         }
     }
 
@@ -400,6 +404,7 @@ struct ActionButton: View {
                 )
         }
         .buttonStyle(.plain)
+        .disabled(style == .disabled)
     }
 }
 

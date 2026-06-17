@@ -130,6 +130,13 @@ enum SystemUtils {
         return "orch"  // fall back to $PATH lookup
     }
 
+    /// True if `path` exists and is a directory.
+    static func directoryExists(_ path: String) -> Bool {
+        var isDir: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
+        return exists && isDir.boolValue
+    }
+
     /// Run a shell command in the background (fire and forget)
     static func shellBackground(_ cmd: String, currentDir: String? = nil) {
         let process = Process()

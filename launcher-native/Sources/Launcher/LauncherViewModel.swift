@@ -309,7 +309,8 @@ final class LauncherViewModel: ObservableObject {
                 portalPath: portal?.path,
                 portalStartCmd: portal?.startCmd,
                 uiRunning: portal?.uiRunning ?? false,
-                apiRunning: portal?.apiRunning ?? false
+                apiRunning: portal?.apiRunning ?? false,
+                pathMissing: !SystemUtils.directoryExists(proj.path)
             ))
         }
 
@@ -327,7 +328,8 @@ final class LauncherViewModel: ObservableObject {
                     portalPath: p.path,
                     portalStartCmd: p.startCmd,
                     uiRunning: p.uiRunning,
-                    apiRunning: p.apiRunning
+                    apiRunning: p.apiRunning,
+                    pathMissing: !SystemUtils.directoryExists(p.path)
                 ))
             }
         }
