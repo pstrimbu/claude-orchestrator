@@ -111,6 +111,25 @@ enum SystemUtils {
         return nil
     }
 
+    /// Resolve the absolute path to the `orch` CLI.
+    ///
+    /// The launcher executable lives at `<repo>/launcher-native/orch-launcher`, so
+    /// `orch` is its sibling at `<repo>/bin/orch`. Resolving it explicitly avoids
+    /// relying on $PATH, which is stripped to a minimal default when the launcher is
+    /// run as a Dock `.app` rather than from a terminal.
+    static func orchExecutable() -> String {
+        if let execPath = Bundle.main.executablePath {
+            let execDir = (execPath as NSString).deletingLastPathComponent
+            let candidate = (execDir as NSString)
+                .appendingPathComponent("../bin/orch")
+            let resolved = (candidate as NSString).standardizingPath
+            if FileManager.default.isExecutableFile(atPath: resolved) {
+                return resolved
+            }
+        }
+        return "orch"  // fall back to $PATH lookup
+    }
+
     /// Run a shell command in the background (fire and forget)
     static func shellBackground(_ cmd: String, currentDir: String? = nil) {
         let process = Process()

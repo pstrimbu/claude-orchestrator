@@ -93,7 +93,8 @@ final class LauncherViewModel: ObservableObject {
         if !projects.contains(where: { $0.path == path }) {
             addProject(path: path)
         }
-        SystemUtils.shellBackground("orch '\(path)' --continue", currentDir: path)
+        let orch = SystemUtils.orchExecutable()
+        SystemUtils.shellBackground("'\(orch)' '\(path)' --continue", currentDir: path)
     }
 
     func focusProject(pid: Int32) {
