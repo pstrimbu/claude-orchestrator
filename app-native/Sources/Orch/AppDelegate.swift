@@ -452,7 +452,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             ? "\r\n\u{1b}[1;32m[Remote Control ON \u{2014} scan the QR / open the session URL below in the Claude app. Restarting session\u{2026}]\u{1b}[0m\r\n"
             : "\r\n\u{1b}[1;90m[Remote Control OFF \u{2014} restarting session\u{2026}]\u{1b}[0m\r\n"
         terminalView.feed(byteArray: [UInt8](banner.utf8)[...])
-        terminalView.displayIfNeeded()
+        forceRepaint()
 
         saveScrollback()
         session?.kill()
@@ -525,17 +525,40 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             // feed() calls setNeedsDisplay internally, but AppKit can defer
             // the actual paint to the next event-driven frame — which makes
             // typed input invisible until a mouse click flushes the queue.
-            terminalView.displayIfNeeded()
+            forceRepaint()
 
             clockify.onActivity()
         }
+    }
+
+    /// Force a synchronous full repaint of the terminal view.
+    ///
+    /// SwiftTerm's `feed()` does not paint directly — it calls `queuePendingDisplay()`,
+    /// which throttles by scheduling its internal `updateDisplay()` (the call that
+    /// actually invalidates the view) on a main-queue timer, guarded by a
+    /// `pendingDisplay` flag. A bare `displayIfNeeded()` right after `feed()` runs
+    /// *before* that timer fires, so the view isn't marked dirty yet and the flush is
+    /// a no-op — repaints depend entirely on the throttle timer. If that timer is
+    /// starved (main runloop in event-tracking mode while an NSMenu overlay is open)
+    /// or its flag gets wedged, typed echo and PTY output stop appearing until an
+    /// unrelated full redraw (line wrap, scroll, resize) fires — the "text doesn't
+    /// show until I pass end of line" symptom after a long session.
+    ///
+    /// SwiftTerm's `draw()` renders straight from the current terminal buffer for
+    /// whatever rect is invalid, so marking the whole view dirty ourselves and
+    /// flushing on the same runloop tick guarantees the latest content is shown,
+    /// independent of the throttle. The throttled `updateDisplay()` still runs and
+    /// keeps the caret/accessibility in sync.
+    private func forceRepaint() {
+        terminalView.needsDisplay = true
+        terminalView.displayIfNeeded()
     }
 
     private func handleSessionExit(_ code: Int32) {
         Log.log("session exited with code \(code)")
         let msg = "\r\n\u{1b}[90m[Session exited with code \(code)]\u{1b}[0m\r\n"
         terminalView.feed(byteArray: [UInt8](msg.utf8)[...])
-        terminalView.displayIfNeeded()
+        forceRepaint()
     }
 
     // MARK: - Scrollback
@@ -567,7 +590,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         let clean = sanitizeScrollback(data)
         if !clean.isEmpty {
             terminalView.feed(byteArray: [UInt8](clean.utf8)[...])
-            terminalView.displayIfNeeded()
+            forceRepaint()
         }
     }
 
@@ -680,7 +703,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         session?.kill()
         // Clear terminal and scrollback
         terminalView.feed(byteArray: [UInt8]("\u{1b}c".utf8)[...])
-        terminalView.displayIfNeeded()
+        forceRepaint()
         scrollbackBuf = ""
         let terminal = terminalView.getTerminal()
         session = ClaudeSession(
