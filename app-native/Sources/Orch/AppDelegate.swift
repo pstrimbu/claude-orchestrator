@@ -399,9 +399,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         if let data = try? JSONSerialization.data(withJSONObject: pos) {
             try? data.write(to: URL(fileURLWithPath: cmdPath))
         }
+        let orch = resolveOrchPath()
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-        proc.arguments = ["-c", "orch '\(projectPath)'"]
+        proc.arguments = ["-c", "\"\(orch)\" '\(projectPath)'"]
         proc.currentDirectoryURL = URL(fileURLWithPath: projectPath)
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
@@ -411,15 +412,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     private func handleF5() {
         saveScrollback()
         if clockify.recording { Task { try? await clockify.flush() } }
+
+        // Relaunch needs the orch CLI. The .app bundle inherits launchd's minimal
+        // PATH, so resolve orch's absolute path first. If it can't be found, fall
+        // back to an in-place session restart rather than terminating into a
+        // closed window (the reported "F5 closes but doesn't reopen" bug).
+        let orch = resolveOrchPath()
+        guard FileManager.default.isExecutableFile(atPath: orch) else {
+            Log.log("F5: orch not resolvable (\(orch)); falling back to in-place restart")
+            handleCtrlR()
+            return
+        }
+
         session?.kill()
-        // Relaunch via orch
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-        proc.arguments = ["-c", "orch \"\(projectPath)\" --continue"]
+        proc.arguments = ["-c", "\"\(orch)\" \"\(projectPath)\" --continue"]
         proc.currentDirectoryURL = URL(fileURLWithPath: projectPath)
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
-        try? proc.run()
+        do {
+            try proc.run()
+        } catch {
+            Log.log("F5 relaunch spawn failed: \(error); falling back to in-place restart")
+            handleCtrlR()  // session already killed; Ctrl+R respawns --continue
+            return
+        }
         NSApp.terminate(nil)
     }
 
@@ -793,6 +811,34 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     }
 
     // MARK: - Helpers
+
+    /// Absolute path to the `orch` CLI.
+    ///
+    /// The app runs as a Dock `.app` bundle launched via `open`, so it inherits
+    /// launchd's minimal PATH — a bare `orch` won't resolve and relaunch (F5) /
+    /// new-window spawns fail silently. Resolve it through an *interactive* login
+    /// shell: the PATH entry for orch's bin dir lives in ~/.zshrc, which is only
+    /// sourced by interactive shells (a plain `-lc` login shell skips it). Falls
+    /// back to the bare name so behavior is unchanged when PATH already has it.
+    private func resolveOrchPath() -> String {
+        for shell in ["/bin/zsh", "/bin/bash"] {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: shell)
+            proc.arguments = ["-ilc", "command -v orch"]
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = FileHandle.nullDevice
+            guard (try? proc.run()) != nil else { continue }
+            proc.waitUntilExit()
+            let out = (String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !out.isEmpty, !out.contains("not found"),
+               FileManager.default.isExecutableFile(atPath: out) {
+                return out
+            }
+        }
+        return "orch"
+    }
 
     private func shellOutput(_ command: String, cwd: String) -> String? {
         let proc = Process()
