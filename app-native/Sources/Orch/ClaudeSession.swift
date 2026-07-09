@@ -6,6 +6,8 @@ class ClaudeSession {
     private(set) var running = false
     private var mode: SessionMode
     private let projectPath: String
+    private let remoteControl: Bool
+    private let remoteName: String?
     private(set) var cols: Int
     private(set) var rows: Int
     private(set) var lastActivity = Date()
@@ -19,11 +21,14 @@ class ClaudeSession {
     var onData: ((Data) -> Void)?
     var onExit: ((Int32) -> Void)?
 
-    init(projectPath: String, cols: Int, rows: Int, mode: SessionMode) {
+    init(projectPath: String, cols: Int, rows: Int, mode: SessionMode,
+         remoteControl: Bool = false, remoteName: String? = nil) {
         self.projectPath = projectPath
         self.cols = cols
         self.rows = rows
         self.mode = mode
+        self.remoteControl = remoteControl
+        self.remoteName = remoteName
     }
 
     func spawn() {
@@ -35,6 +40,14 @@ class ClaudeSession {
         case .new: break
         case .continue_: args.append("--continue")
         case .resume(let id): args += ["--resume", id]
+        }
+
+        // Remote Control: launch this session with `--remote-control [name]` so it
+        // can be driven from claude.ai/code or the Claude mobile app. Claude prints
+        // a QR code + session URL to the terminal on startup.
+        if remoteControl {
+            args.append("--remote-control")
+            if let name = remoteName, !name.isEmpty { args.append(name) }
         }
 
         // Set up PTY

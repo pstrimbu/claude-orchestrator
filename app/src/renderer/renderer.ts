@@ -61,6 +61,22 @@ term.attachCustomKeyEventHandler((ev: KeyboardEvent) => {
     api.sendHotkey('cmd+n');
     return false;
   }
+  // Ctrl+Alt+R: send Ctrl-L (form feed) to the PTY to force the app to
+  // redraw. Rescue hotkey for when the terminal appears stuck (echo dropped,
+  // input not being reflected). Non-destructive — Claude Code / most shells
+  // interpret Ctrl-L as "clear/redraw".
+  if (
+    ev.type === 'keydown'
+    && (ev.key === 'r' || ev.key === 'R')
+    && ev.ctrlKey && ev.altKey
+    && !ev.metaKey && !ev.shiftKey
+  ) {
+    if (!overlayVisible) {
+      api.sendPtyInput('\x0c');
+      resetStuckWatchdog();
+    }
+    return false;
+  }
   return true;
 });
 
@@ -72,11 +88,55 @@ term.onData((data) => {
   }
   if (handleHotkey(data)) return;
   api.sendPtyInput(data);
+  noteKeystroke();
 });
 
 api.onPtyData((data) => {
   term.write(data);
+  noteOutput();
 });
+
+// --- Stuck-terminal watchdog ---
+// Heuristic: if the user has sent >= STUCK_KEYSTROKE_THRESHOLD keystrokes to
+// the PTY without any output arriving back, and their most recent keystroke
+// was ~STUCK_QUIET_MS ago (so they've stopped typing and would notice), show a
+// small toast pointing at the Ctrl+Alt+R rescue hotkey. Cleared as soon as any
+// PTY output arrives, or when the user hits the rescue key.
+const STUCK_KEYSTROKE_THRESHOLD = 3;
+const STUCK_QUIET_MS = 1500;
+const stuckToastEl = document.getElementById('stuck-toast')!;
+let keystrokesSinceOutput = 0;
+let lastKeystrokeAt = 0;
+let stuckToastVisible = false;
+
+function showStuckToast(): void {
+  if (stuckToastVisible) return;
+  stuckToastVisible = true;
+  stuckToastEl.classList.remove('hidden');
+}
+function hideStuckToast(): void {
+  if (!stuckToastVisible) return;
+  stuckToastVisible = false;
+  stuckToastEl.classList.add('hidden');
+}
+function noteKeystroke(): void {
+  keystrokesSinceOutput++;
+  lastKeystrokeAt = Date.now();
+}
+function noteOutput(): void {
+  if (keystrokesSinceOutput > 0) keystrokesSinceOutput = 0;
+  hideStuckToast();
+}
+function resetStuckWatchdog(): void {
+  keystrokesSinceOutput = 0;
+  hideStuckToast();
+}
+setInterval(() => {
+  if (stuckToastVisible) return;
+  const stalled = keystrokesSinceOutput >= STUCK_KEYSTROKE_THRESHOLD
+    && (Date.now() - lastKeystrokeAt) >= STUCK_QUIET_MS;
+  if (stalled) showStuckToast();
+}, 500);
 
 // --- Resize ---
 let lastContainerWidth = 0;

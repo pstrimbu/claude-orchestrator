@@ -34,6 +34,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     private var lastPtyOutputTime: Date = .distantPast
     private var lastCommand = ""
     private var inputBuffer = ""
+    private var remoteControlEnabled = false
 
     // Keep signal sources alive
     private var sigUsr1Source: DispatchSourceSignal?
@@ -427,7 +428,43 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         saveScrollback()
         session?.kill()
         let terminal = terminalView.getTerminal()
-        session = ClaudeSession(projectPath: projectPath, cols: terminal.cols, rows: terminal.rows, mode: .continue_)
+        session = ClaudeSession(projectPath: projectPath, cols: terminal.cols, rows: terminal.rows, mode: .continue_,
+                                remoteControl: remoteControlEnabled, remoteName: config.projectName)
+        session.onData = { [weak self] data in
+            self?.handleSessionData(data)
+        }
+        session.onExit = { [weak self] code in
+            self?.handleSessionExit(code)
+        }
+        session.spawn()
+    }
+
+    private func toggleRemoteControl() {
+        remoteControlEnabled.toggle()
+        sendStatusUpdate()
+
+        // Remote Control is a launch mode, not an in-session command — so restart
+        // the Claude session with (or without) `--remote-control`, resuming the same
+        // conversation via --continue. When enabling, Claude prints a QR code +
+        // session URL to the terminal; scan it with the Claude mobile app to drive
+        // this session from your phone. The session stays local; the phone is a UI.
+        let banner = remoteControlEnabled
+            ? "\r\n\u{1b}[1;32m[Remote Control ON \u{2014} scan the QR / open the session URL below in the Claude app. Restarting session\u{2026}]\u{1b}[0m\r\n"
+            : "\r\n\u{1b}[1;90m[Remote Control OFF \u{2014} restarting session\u{2026}]\u{1b}[0m\r\n"
+        terminalView.feed(byteArray: [UInt8](banner.utf8)[...])
+        terminalView.displayIfNeeded()
+
+        saveScrollback()
+        session?.kill()
+        let terminal = terminalView.getTerminal()
+        session = ClaudeSession(
+            projectPath: projectPath,
+            cols: terminal.cols,
+            rows: terminal.rows,
+            mode: .continue_,
+            remoteControl: remoteControlEnabled,
+            remoteName: config.projectName
+        )
         session.onData = { [weak self] data in
             self?.handleSessionData(data)
         }
@@ -444,7 +481,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             projectPath: projectPath,
             cols: max(cols, 10),
             rows: max(rows, 5),
-            mode: sessionMode
+            mode: sessionMode,
+            remoteControl: remoteControlEnabled,
+            remoteName: config.projectName
         )
         session.onData = { [weak self] data in
             self?.handleSessionData(data)
@@ -583,7 +622,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             gitBranch: statusBarState.gitBranch,
             gitDirty: statusBarState.gitDirty,
             sessionLabel: sessionLabel(),
-            lastCommand: lastCommand
+            lastCommand: lastCommand,
+            remoteActive: remoteControlEnabled
         )
     }
 
@@ -614,6 +654,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
                 onSessionSwitch: { [weak self] mode in self?.switchSession(mode) },
                 onUpdate: { [weak self] in self?.sendStatusUpdate() }
             )
+        case "remote":
+            toggleRemoteControl()
         case "history":
             showHistoryOverlay(overlay: overlay, history: history, session: session,
                                onUpdate: { [weak self] in self?.sendStatusUpdate() })
@@ -645,7 +687,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             projectPath: projectPath,
             cols: terminal.cols,
             rows: terminal.rows,
-            mode: mode
+            mode: mode,
+            remoteControl: remoteControlEnabled,
+            remoteName: config.projectName
         )
         session.onData = { [weak self] data in
             self?.handleSessionData(data)

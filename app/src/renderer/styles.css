@@ -131,6 +131,38 @@ body {
   flex-direction: column;
 }
 
+/* Stuck-terminal toast — surfaces when keystrokes stop producing output */
+#stuck-toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  padding: 8px 12px;
+  background: var(--overlay-bg);
+  border: 1px solid var(--overlay-border);
+  border-radius: 6px;
+  color: var(--fg);
+  font-size: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  z-index: 50;
+  opacity: 1;
+  transition: opacity 180ms ease-in-out;
+  pointer-events: none;
+}
+#stuck-toast.hidden {
+  opacity: 0;
+  visibility: hidden;
+}
+#stuck-toast kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  margin: 0 1px;
+  border: 1px solid var(--overlay-border);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  font-size: 11px;
+}
+
 /* Overlay */
 #overlay-backdrop {
   position: fixed;
