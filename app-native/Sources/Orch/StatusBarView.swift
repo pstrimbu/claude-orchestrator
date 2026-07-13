@@ -235,12 +235,19 @@ struct StatusBarView: View {
     }
 
     private var newSessionChip: some View {
-        sectionButton("newsession") {
-            Text("\u{FF0B}")   // ＋ — open a fresh second orch session for this project
+        // Compact "+" — tighter than a normal section chip.
+        Button(action: { model.onSectionClick?("newsession") }) {
+            Text("+")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(Color(hex: 0x2563eb))
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .help("Open a new orch session for this project")
+        .onHover { hovering in
+            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
     }
 
     private var remoteChip: some View {
