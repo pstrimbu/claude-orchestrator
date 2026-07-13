@@ -29,12 +29,13 @@ struct StatusBarData {
     var prChecks = ""            // "passing" | "failing" | "pending" | ""
     var attention = false        // Claude finished — awaiting your input (blinks)
     var usage24h: [Int] = []     // 24 hourly token buckets, oldest→newest
+    var projectPath = ""
+    var recentCommands: [String] = []   // newest last
 }
 
 class StatusBarModel: ObservableObject {
     @Published var data = StatusBarData()
     var onSectionClick: ((String) -> Void)?
-    var isMenuOpen: (() -> Bool)?
 }
 
 struct StatusBarView: View {
@@ -43,6 +44,9 @@ struct StatusBarView: View {
     /// Which section the pointer is over — used to expand chips that have more
     /// detail to show (full model id, issue title, full last command).
     @State private var hover = ""
+    /// Which section's read-only preview popover is currently showing (after a
+    /// brief dwell). Switches live as you slide across chips.
+    @State private var preview = ""
 
     private let fg = Color(hex: 0x1f2937)
     private let dim = Color(hex: 0x6b7280)
@@ -100,6 +104,18 @@ struct StatusBarView: View {
                     .foregroundColor(fg)
             }
         }
+        .popover(isPresented: previewBinding("project"), arrowEdge: .bottom) { projectPreview }
+    }
+
+    private var projectPreview: some View {
+        PreviewCard(title: model.data.projectName) {
+            if !model.data.projectPath.isEmpty { previewRow(model.data.projectPath, mono: true) }
+            previewRow(model.data.claudeActive ? "Claude: working"
+                       : (model.data.attention ? "Claude: your turn" : "Claude: idle"))
+            if model.data.trackerEnabled {
+                previewRow("Tracker: \(model.data.trackerTeamKey ?? "on")")
+            }
+        }
     }
 
     private var dotColor: Color {
@@ -128,10 +144,7 @@ struct StatusBarView: View {
             }
         }
         // Hover shows a 24h usage graph; click still opens the size menu.
-        .popover(isPresented: Binding(
-            get: { hover == "size" },
-            set: { if !$0, hover == "size" { hover = "" } }
-        ), arrowEdge: .bottom) {
+        .popover(isPresented: previewBinding("size"), arrowEdge: .bottom) {
             UsageGraphView(buckets: model.data.usage24h)
         }
     }
@@ -165,6 +178,14 @@ struct StatusBarView: View {
                     .foregroundColor(fg)
             }
         }
+        .popover(isPresented: previewBinding("time"), arrowEdge: .bottom) { timePreview }
+    }
+
+    private var timePreview: some View {
+        PreviewCard(title: "Time tracking") {
+            previewRow(model.data.timeRecording ? "\u{25cf} Recording" : "\u{25cb} Not recording")
+            previewRow("Elapsed: \(model.data.timeElapsed)")
+        }
     }
 
     private var issuesChip: some View {
@@ -178,6 +199,20 @@ struct StatusBarView: View {
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
         }
+        .popover(isPresented: previewBinding("issues"), arrowEdge: .bottom) { issuesPreview }
+    }
+
+    private var issuesPreview: some View {
+        PreviewCard(title: "Issue") {
+            if let key = model.data.currentIssueKey {
+                previewRow(key, mono: true)
+                if let t = model.data.currentIssueTitle, !t.isEmpty { previewRow(t) }
+            } else if model.data.trackerEnabled {
+                previewRow("Team \(model.data.trackerTeamKey ?? "") — no issue selected")
+            } else {
+                previewRow("No tracker configured")
+            }
+        }
     }
 
     private var gitChip: some View {
@@ -186,6 +221,26 @@ struct StatusBarView: View {
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundColor(fg)
                 .lineLimit(1)
+        }
+        .popover(isPresented: previewBinding("git"), arrowEdge: .bottom) { gitPreview }
+    }
+
+    private var gitPreview: some View {
+        PreviewCard(title: "Git") {
+            previewRow(model.data.gitBranch.isEmpty ? "no branch" : model.data.gitBranch, mono: true)
+            if model.data.gitAhead > 0 || model.data.gitBehind > 0 {
+                previewRow("\u{2191}\(model.data.gitAhead) ahead · \u{2193}\(model.data.gitBehind) behind")
+            }
+            if model.data.diffAdded > 0 || model.data.diffRemoved > 0 {
+                previewRow("+\(model.data.diffAdded) \u{2212}\(model.data.diffRemoved) uncommitted")
+            } else if model.data.gitDirty {
+                previewRow("working tree dirty")
+            } else {
+                previewRow("clean")
+            }
+            if model.data.prNumber > 0 {
+                previewRow("PR #\(model.data.prNumber) — checks \(model.data.prChecks.isEmpty ? "n/a" : model.data.prChecks)")
+            }
         }
     }
 
@@ -228,6 +283,14 @@ struct StatusBarView: View {
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundColor(fg)
                 .lineLimit(1)
+        }
+        .popover(isPresented: previewBinding("sessions"), arrowEdge: .bottom) { sessionsPreview }
+    }
+
+    private var sessionsPreview: some View {
+        PreviewCard(title: "Session") {
+            if model.data.bgAgents > 0 { previewRow("\(model.data.bgAgents) background agent(s) running") }
+            previewRow("Click to switch or resume a session")
         }
     }
 
@@ -276,14 +339,26 @@ struct StatusBarView: View {
 
     private var historyChip: some View {
         sectionButton("history") {
-            // Truncate the last command by default (keeping the tail visible);
-            // widen on hover to show more of it.
             Text(model.data.lastCommand ?? "")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(dim)
                 .lineLimit(1)
                 .truncationMode(.head)
-                .frame(maxWidth: hover == "history" ? 520 : 200, alignment: .trailing)
+                .frame(maxWidth: 200, alignment: .trailing)
+        }
+        .popover(isPresented: previewBinding("history"), arrowEdge: .bottom) { historyPreview }
+    }
+
+    private var historyPreview: some View {
+        PreviewCard(title: "Recent commands") {
+            if model.data.recentCommands.isEmpty {
+                previewRow("No commands yet")
+            } else {
+                // Newest last in the array — show newest first.
+                ForEach(Array(model.data.recentCommands.suffix(10).reversed().enumerated()), id: \.offset) { _, cmd in
+                    previewRow(cmd, mono: true)
+                }
+            }
         }
     }
 
@@ -362,6 +437,15 @@ struct StatusBarView: View {
         }
     }
 
+    private func previewRow(_ text: String, mono: Bool = false) -> some View {
+        Text(text)
+            .font(.system(size: 11, design: mono ? .monospaced : .default))
+            .foregroundColor(fg)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private var separator: some View {
         Text("\u{2502}")
             .font(.system(size: 11, design: .monospaced))
@@ -369,37 +453,44 @@ struct StatusBarView: View {
             .padding(.horizontal, 4)
     }
 
-    /// Sections that open a dropdown menu (vs. perform an action). These open on
-    /// hover; action chips (model, push, pr, remote, +) stay click-only so a
-    /// stray hover never pushes, opens a browser, or spawns a window.
-    static let menuSections: Set<String> = ["project", "time", "issues", "git", "sessions", "history"]
+    /// Sections that show a read-only preview popover on hover. Action chips
+    /// (model, push, pr, remote, +) are excluded so a stray hover shows nothing
+    /// spurious. Clicking any chip still runs its normal action/menu.
+    static let hoverSections: Set<String> = ["project", "time", "issues", "git", "sessions", "size", "history"]
 
     private func sectionButton<C: View>(_ section: String, @ViewBuilder content: @escaping () -> C) -> some View {
         SectionButton(
             section: section,
-            hoverOpens: Self.menuSections.contains(section),
+            previewable: Self.hoverSections.contains(section),
             hover: $hover,
+            preview: $preview,
             onActivate: { [model] in model.onSectionClick?(section) },
-            isMenuOpen: { [model] in model.isMenuOpen?() ?? false },
             content: content
         )
     }
+
+    /// Binding that presents `section`'s preview popover while it's the active
+    /// preview; dismissing (moving away) clears it.
+    private func previewBinding(_ section: String) -> Binding<Bool> {
+        Binding(get: { preview == section }, set: { if !$0, preview == section { preview = "" } })
+    }
 }
 
-/// A status-bar chip. Clicking always activates it; menu-opening chips also
-/// activate on hover after a short dwell (so sweeping past doesn't trigger).
+/// A status-bar chip. Clicking always activates it. Hovering a previewable chip
+/// sets it as the active preview after a short dwell — but switches instantly
+/// once a preview is already showing, so sliding across chips feels live.
 private struct SectionButton<Content: View>: View {
     let section: String
-    let hoverOpens: Bool
+    let previewable: Bool
     @Binding var hover: String
+    @Binding var preview: String
     let onActivate: () -> Void
-    let isMenuOpen: () -> Bool
     @ViewBuilder let content: () -> Content
-    @State private var armed = true
     @State private var dwell: DispatchWorkItem?
+    @State private var clearWork: DispatchWorkItem?
 
     var body: some View {
-        Button(action: { cancelDwell(); onActivate() }) {
+        Button(action: { cancelDwell(); cancelClear(); preview = ""; onActivate() }) {
             content()
                 .padding(.horizontal, 10)
                 .padding(.vertical, 2)
@@ -410,27 +501,50 @@ private struct SectionButton<Content: View>: View {
             if hovering {
                 NSCursor.pointingHand.push()
                 hover = section
-                if hoverOpens && armed && !isMenuOpen() {
-                    let work = DispatchWorkItem {
-                        guard !isMenuOpen() else { return }
-                        armed = false
-                        onActivate()
-                    }
+                guard previewable else { return }
+                cancelClear()
+                if preview.isEmpty {
+                    let work = DispatchWorkItem { preview = section }
                     dwell = work
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+                } else {
+                    preview = section   // a preview is already open — switch live
                 }
             } else {
                 NSCursor.pop()
                 if hover == section { hover = "" }
                 cancelDwell()
-                armed = true
+                // Delay clearing so sliding to an adjacent chip switches the
+                // preview instead of momentarily blanking it (the incoming
+                // chip's enter sets `preview` first, and this guard then skips).
+                let work = DispatchWorkItem { if preview == section { preview = "" } }
+                clearWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
             }
         }
     }
 
-    private func cancelDwell() {
-        dwell?.cancel()
-        dwell = nil
+    private func cancelDwell() { dwell?.cancel(); dwell = nil }
+    private func cancelClear() { clearWork?.cancel(); clearWork = nil }
+}
+
+// MARK: - Hover preview card
+
+/// A small read-only info card shown in a hover popover for a status-bar chip.
+struct PreviewCard<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.secondary)
+            content()
+        }
+        .padding(12)
+        .frame(minWidth: 160, maxWidth: 460, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 

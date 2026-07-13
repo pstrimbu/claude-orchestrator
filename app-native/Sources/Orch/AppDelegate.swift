@@ -226,7 +226,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         statusBarModel.onSectionClick = { [weak self] section in
             self?.openSection(section)
         }
-        statusBarModel.isMenuOpen = { [weak self] in self?.overlay.visible ?? false }
         let statusBar = NSHostingView(rootView: StatusBarView(model: statusBarModel))
         statusBar.translatesAutoresizingMaskIntoConstraints = false
 
@@ -812,7 +811,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             prNumber: statusBarState.prNumber,
             prChecks: statusBarState.prChecks,
             attention: attention,
-            usage24h: statusBarState.usage24h
+            usage24h: statusBarState.usage24h,
+            projectPath: projectPath,
+            recentCommands: history.getRecent(10).map { $0.cmd }
         )
     }
 
