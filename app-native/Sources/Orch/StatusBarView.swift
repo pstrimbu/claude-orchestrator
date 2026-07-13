@@ -438,9 +438,11 @@ struct StatusBarView: View {
     }
 
     private func previewRow(_ text: String, mono: Bool = false) -> some View {
+        // Adaptive color — the popover follows the app's (dark) appearance, not
+        // the white status bar, so the fixed dark `fg` would be invisible here.
         Text(text)
             .font(.system(size: 11, design: mono ? .monospaced : .default))
-            .foregroundColor(fg)
+            .foregroundColor(.primary)
             .lineLimit(1)
             .truncationMode(.middle)
             .frame(maxWidth: .infinity, alignment: .leading)
