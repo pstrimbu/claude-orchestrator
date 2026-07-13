@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 struct StatusBarData {
     var claudeActive = false
@@ -27,6 +28,7 @@ struct StatusBarData {
     var prNumber = 0
     var prChecks = ""            // "passing" | "failing" | "pending" | ""
     var attention = false        // Claude finished — awaiting your input (blinks)
+    var usage24h: [Int] = []     // 24 hourly token buckets, oldest→newest
 }
 
 class StatusBarModel: ObservableObject {
@@ -124,6 +126,13 @@ struct StatusBarView: View {
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundColor(fg)
             }
+        }
+        // Hover shows a 24h usage graph; click still opens the size menu.
+        .popover(isPresented: Binding(
+            get: { hover == "size" },
+            set: { if !$0, hover == "size" { hover = "" } }
+        ), arrowEdge: .bottom) {
+            UsageGraphView(buckets: model.data.usage24h)
         }
     }
 
@@ -363,7 +372,7 @@ struct StatusBarView: View {
     /// Sections that open a dropdown menu (vs. perform an action). These open on
     /// hover; action chips (model, push, pr, remote, +) stay click-only so a
     /// stray hover never pushes, opens a browser, or spawns a window.
-    static let menuSections: Set<String> = ["project", "time", "issues", "git", "sessions", "size", "history"]
+    static let menuSections: Set<String> = ["project", "time", "issues", "git", "sessions", "history"]
 
     private func sectionButton<C: View>(_ section: String, @ViewBuilder content: @escaping () -> C) -> some View {
         SectionButton(
@@ -422,6 +431,70 @@ private struct SectionButton<Content: View>: View {
     private func cancelDwell() {
         dwell?.cancel()
         dwell = nil
+    }
+}
+
+// MARK: - 24h usage graph
+
+/// Bar chart of hourly token usage over the last 24 hours. `buckets` is 24
+/// values, oldest→newest (index 23 = the current hour).
+struct UsageGraphView: View {
+    let buckets: [Int]
+
+    private var total: Int { buckets.reduce(0, +) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Tokens · last 24h")
+                    .font(.system(size: 11, weight: .semibold))
+                Spacer()
+                Text(shortK(total))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+            if buckets.isEmpty || total == 0 {
+                Text("No usage in the last 24 hours")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .frame(width: 300, height: 120, alignment: .center)
+            } else {
+                Chart(Array(buckets.enumerated()), id: \.offset) { idx, value in
+                    BarMark(
+                        x: .value("Hour", idx),
+                        y: .value("Tokens", value)
+                    )
+                    .foregroundStyle(Color(hex: 0x2563eb))
+                    .cornerRadius(1.5)
+                }
+                .chartXScale(domain: -0.5...23.5)
+                .chartXAxis {
+                    AxisMarks(values: [0, 6, 12, 18, 23]) { v in
+                        AxisValueLabel {
+                            if let i = v.as(Int.self) {
+                                Text(i == 23 ? "now" : "-\(23 - i)h")
+                            }
+                        }
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks { v in
+                        AxisGridLine()
+                        AxisValueLabel {
+                            if let n = v.as(Int.self) { Text(shortK(n)) }
+                        }
+                    }
+                }
+                .frame(width: 320, height: 150)
+            }
+        }
+        .padding(12)
+    }
+
+    private func shortK(_ t: Int) -> String {
+        if t >= 1_000_000 { return String(format: "%.1fM", Double(t) / 1_000_000) }
+        if t >= 1_000 { return "\(Int((Double(t) / 1000).rounded()))k" }
+        return "\(t)"
     }
 }
 

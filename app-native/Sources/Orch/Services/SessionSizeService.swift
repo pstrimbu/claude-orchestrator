@@ -186,6 +186,55 @@ final class SessionSizeService {
         return result
     }
 
+    /// Hourly token usage over the last 24 hours across all of this project's
+    /// transcripts (the sibling `.jsonl` files next to the current session).
+    /// Returns 24 buckets, oldest→newest (index 23 = current hour). Counts new
+    /// tokens (input + output + cache-creation) — excludes cache reads, which
+    /// balloon with context and would swamp the graph.
+    func hourlyUsage(sessionId: String?) -> [Int] {
+        guard let sessionId = sessionId, let path = transcriptPath(sessionId: sessionId) else { return [] }
+        let dir = (path as NSString).deletingLastPathComponent
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return [] }
+
+        let now = Date()
+        let start = now.addingTimeInterval(-24 * 3600)
+        var buckets = [Int](repeating: 0, count: 24)
+
+        let isoFrac = ISO8601DateFormatter()
+        isoFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let iso = ISO8601DateFormatter()
+
+        for f in files where f.hasSuffix(".jsonl") {
+            let p = dir + "/" + f
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: p),
+                  let sz = attrs[.size] as? Int,
+                  let fh = try? FileHandle(forReadingFrom: URL(fileURLWithPath: p)) else { continue }
+            defer { try? fh.close() }
+            let cap = 4 * 1024 * 1024
+            let s = sz > cap ? UInt64(sz - cap) : 0
+            try? fh.seek(toOffset: s)
+            let data = (try? fh.readToEnd()) ?? Data()
+            let text = String(decoding: data, as: UTF8.self)
+
+            for line in text.split(separator: "\n") {
+                guard line.contains("usage"),
+                      let d = line.data(using: .utf8),
+                      let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                      let ts = o["timestamp"] as? String,
+                      let msg = o["message"] as? [String: Any],
+                      let usage = msg["usage"] as? [String: Any] else { continue }
+                guard let date = isoFrac.date(from: ts) ?? iso.date(from: ts), date >= start else { continue }
+                let tok = (usage["input_tokens"] as? Int ?? 0)
+                        + (usage["output_tokens"] as? Int ?? 0)
+                        + (usage["cache_creation_input_tokens"] as? Int ?? 0)
+                let hoursAgo = Int(now.timeIntervalSince(date) / 3600)
+                let idx = 23 - min(23, max(0, hoursAgo))
+                buckets[idx] += tok
+            }
+        }
+        return buckets
+    }
+
     private func transcriptPath(sessionId: String) -> String? {
         if let c = cachedPath, c.sessionId == sessionId,
            FileManager.default.fileExists(atPath: c.path) {

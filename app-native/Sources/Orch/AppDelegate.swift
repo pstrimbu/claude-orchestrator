@@ -34,6 +34,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     private var gitPollTimer: Timer?
     private var sizePollTimer: Timer?
     private var prPollTimer: Timer?
+    private var usagePollTimer: Timer?
     private var lastPtyOutputTime: Date = .distantPast
     private var lastCommand = ""
     private var inputBuffer = ""
@@ -178,6 +179,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         pollPR()
         prPollTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
             self?.pollPR()
+        }
+        pollUsage()
+        usagePollTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+            self?.pollUsage()
         }
 
         // Handle SIGUSR1 — focus window
@@ -757,6 +762,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         }
     }
 
+    /// Aggregate the last 24h of token usage across this project's transcripts
+    /// for the hover graph. Slower cadence — it scans sibling session files.
+    private func pollUsage() {
+        let sid = sessionStore.currentSessionId(childPid: session?.childPid ?? 0)
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            let buckets = self.sessionSize.hourlyUsage(sessionId: sid)
+            DispatchQueue.main.async {
+                self.statusBarState.usage24h = buckets
+                self.sendStatusUpdate()
+            }
+        }
+    }
+
     // MARK: - Status update
 
     private func sendStatusUpdate() {
@@ -792,7 +811,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             diffRemoved: statusBarState.diffRemoved,
             prNumber: statusBarState.prNumber,
             prChecks: statusBarState.prChecks,
-            attention: attention
+            attention: attention,
+            usage24h: statusBarState.usage24h
         )
     }
 
@@ -954,6 +974,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         gitPollTimer?.invalidate()
         sizePollTimer?.invalidate()
         prPollTimer?.invalidate()
+        usagePollTimer?.invalidate()
         sizePollTimer?.invalidate()
         clockify?.destroy()
         session?.kill()
