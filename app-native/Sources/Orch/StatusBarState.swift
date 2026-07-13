@@ -16,5 +16,4 @@ class StatusBarState {
     var diffRemoved: Int = 0
     var prNumber: Int = 0          // 0 = no open PR
     var prChecks: String = ""      // "passing" | "failing" | "pending" | ""
-    var usage24h: [Int] = []       // 24 hourly token buckets, oldest→newest
 }
