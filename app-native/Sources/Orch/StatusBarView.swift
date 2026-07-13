@@ -32,6 +32,7 @@ struct StatusBarData {
 class StatusBarModel: ObservableObject {
     @Published var data = StatusBarData()
     var onSectionClick: ((String) -> Void)?
+    var isMenuOpen: (() -> Bool)?
 }
 
 struct StatusBarView: View {
@@ -359,8 +360,37 @@ struct StatusBarView: View {
             .padding(.horizontal, 4)
     }
 
-    private func sectionButton(_ section: String, @ViewBuilder content: () -> some View) -> some View {
-        Button(action: { model.onSectionClick?(section) }) {
+    /// Sections that open a dropdown menu (vs. perform an action). These open on
+    /// hover; action chips (model, push, pr, remote, +) stay click-only so a
+    /// stray hover never pushes, opens a browser, or spawns a window.
+    static let menuSections: Set<String> = ["project", "time", "issues", "git", "sessions", "size", "history"]
+
+    private func sectionButton<C: View>(_ section: String, @ViewBuilder content: @escaping () -> C) -> some View {
+        SectionButton(
+            section: section,
+            hoverOpens: Self.menuSections.contains(section),
+            hover: $hover,
+            onActivate: { [model] in model.onSectionClick?(section) },
+            isMenuOpen: { [model] in model.isMenuOpen?() ?? false },
+            content: content
+        )
+    }
+}
+
+/// A status-bar chip. Clicking always activates it; menu-opening chips also
+/// activate on hover after a short dwell (so sweeping past doesn't trigger).
+private struct SectionButton<Content: View>: View {
+    let section: String
+    let hoverOpens: Bool
+    @Binding var hover: String
+    let onActivate: () -> Void
+    let isMenuOpen: () -> Bool
+    @ViewBuilder let content: () -> Content
+    @State private var armed = true
+    @State private var dwell: DispatchWorkItem?
+
+    var body: some View {
+        Button(action: { cancelDwell(); onActivate() }) {
             content()
                 .padding(.horizontal, 10)
                 .padding(.vertical, 2)
@@ -371,11 +401,27 @@ struct StatusBarView: View {
             if hovering {
                 NSCursor.pointingHand.push()
                 hover = section
+                if hoverOpens && armed && !isMenuOpen() {
+                    let work = DispatchWorkItem {
+                        guard !isMenuOpen() else { return }
+                        armed = false
+                        onActivate()
+                    }
+                    dwell = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+                }
             } else {
                 NSCursor.pop()
                 if hover == section { hover = "" }
+                cancelDwell()
+                armed = true
             }
         }
+    }
+
+    private func cancelDwell() {
+        dwell?.cancel()
+        dwell = nil
     }
 }
 

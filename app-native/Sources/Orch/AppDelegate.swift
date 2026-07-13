@@ -221,6 +221,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         statusBarModel.onSectionClick = { [weak self] section in
             self?.openSection(section)
         }
+        statusBarModel.isMenuOpen = { [weak self] in self?.overlay.visible ?? false }
         let statusBar = NSHostingView(rootView: StatusBarView(model: statusBarModel))
         statusBar.translatesAutoresizingMaskIntoConstraints = false
 
