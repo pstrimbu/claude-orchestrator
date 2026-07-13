@@ -28,7 +28,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     private var statusBarState = StatusBarState()
     private var statusBarModel = StatusBarModel()
     private var terminalView: TerminalView!
-    private var statusBarHost: NSHostingView<StatusBarView>!
 
     private var sessionSize = SessionSizeService()
     private var statusTimer: Timer?
@@ -46,8 +45,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     private var lastUserInputTime: Date = .distantPast
     // Burn-rate sampling: (cumulative tokens, timestamp) of the previous sample.
     private var lastTokenSample: (tokens: Int, time: Date)?
-    // Status bar height, grows to a second line when chips wrap.
-    private var statusBarHeight: CGFloat = 28
 
     // Keep signal sources alive
     private var sigUsr1Source: DispatchSourceSignal?
@@ -225,7 +222,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             self?.openSection(section)
         }
         let statusBar = NSHostingView(rootView: StatusBarView(model: statusBarModel))
-        statusBarHost = statusBar
         statusBar.translatesAutoresizingMaskIntoConstraints = false
 
         // Window — create first so we can constrain to its contentView
@@ -257,29 +253,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         container.layer?.backgroundColor = NSColor(red: 0x1e/255, green: 0x1e/255, blue: 0x1e/255, alpha: 1).cgColor
         let cw = container.bounds.width
         let ch = container.bounds.height
-        let statusH = statusBarHeight
+        let statusH: CGFloat = 28
 
-        // Terminal is frame-based (SwiftTerm renders best that way). A fixed top
-        // margin equal to the bar height is preserved on window resize.
+        statusBar.translatesAutoresizingMaskIntoConstraints = true
+        statusBar.frame = NSRect(x: 0, y: ch - statusH, width: cw, height: statusH)
+        statusBar.autoresizingMask = [.width, .minYMargin]
+
         terminalView.translatesAutoresizingMaskIntoConstraints = true
         terminalView.frame = NSRect(x: 0, y: 0, width: cw, height: ch - statusH)
         terminalView.autoresizingMask = [.width, .height]
-        container.addSubview(terminalView)
 
-        // Status bar sizes itself to its content (one line, or two when the
-        // chips wrap). We pin width + top with Auto Layout and let its intrinsic
-        // height drive; a frame-change observer repositions the terminal below.
-        statusBar.sizingOptions = [.intrinsicContentSize]
+        container.addSubview(terminalView)
         container.addSubview(statusBar)
-        NSLayoutConstraint.activate([
-            statusBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            statusBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            statusBar.topAnchor.constraint(equalTo: container.topAnchor),
-        ])
-        statusBar.postsFrameChangedNotifications = true
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(statusBarFrameChanged),
-            name: NSView.frameDidChangeNotification, object: statusBar)
         window.isReleasedWhenClosed = false
         window.titlebarAppearsTransparent = true
 
@@ -673,18 +658,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
 
     // MARK: - Git polling
 
-    /// The status bar grew or shrank (chips wrapped to a second line, or back).
-    /// Give the reclaimed space to the terminal below it.
-    @objc private func statusBarFrameChanged() {
-        guard let container = window?.contentView, statusBarHost != nil else { return }
-        let h = statusBarHost.frame.height
-        guard h > 0, abs(h - statusBarHeight) > 0.5 else { return }
-        statusBarHeight = h
-        terminalView.frame = NSRect(x: 0, y: 0, width: container.bounds.width,
-                                    height: container.bounds.height - h)
-        forceRepaint()
-    }
-
     private func pollGitInfo() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
@@ -870,6 +843,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 _ = self?.shellOutput("gh pr view --web 2>/dev/null", cwd: cwd)
             }
+        case "newsession":
+            handleCmdN()
         case "remote":
             toggleRemoteControl()
         case "history":

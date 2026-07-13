@@ -37,12 +37,15 @@ class StatusBarModel: ObservableObject {
 struct StatusBarView: View {
     @ObservedObject var model: StatusBarModel
     @State private var blink = false
+    /// Which section the pointer is over — used to expand chips that have more
+    /// detail to show (full model id, issue title, full last command).
+    @State private var hover = ""
 
     private let fg = Color(hex: 0x1f2937)
     private let dim = Color(hex: 0x6b7280)
 
     var body: some View {
-        BarFlow(hSpacing: 0, vSpacing: 2) {
+        HStack(spacing: 0) {
             projectChip
             separator
             if !model.data.model.isEmpty { modelChip; separator }
@@ -63,10 +66,13 @@ struct StatusBarView: View {
             if model.data.bgAgents > 0 { agentsChip }
             separator
             remoteChip
+            Spacer(minLength: 8)
             historyChip
+            separator
+            newSessionChip
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 4)
+        .frame(height: 28)
         .background(Color(hex: 0xffffff))
         .overlay(alignment: .bottom) {
             Rectangle().fill(Color(hex: 0xd1d5db)).frame(height: 1)
@@ -100,9 +106,12 @@ struct StatusBarView: View {
 
     private var modelChip: some View {
         sectionButton("model") {
-            Text(modelShort)
+            // Compact short name; reveal the full model id on hover.
+            Text(hover == "model" ? model.data.model : modelShort)
                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 .foregroundColor(Color(hex: 0x2563eb))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
     }
 
@@ -150,10 +159,14 @@ struct StatusBarView: View {
 
     private var issuesChip: some View {
         sectionButton("issues") {
-            Text(issueText)
+            // Show the issue key; reveal "KEY — title" on hover when available.
+            Text(hover == "issues" && (model.data.currentIssueTitle?.isEmpty == false)
+                 ? "\(issueText) \u{2014} \(model.data.currentIssueTitle!)"
+                 : issueText)
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundColor(fg)
                 .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
     }
 
@@ -221,6 +234,15 @@ struct StatusBarView: View {
         .help("\(model.data.bgAgents) background agent(s) running")
     }
 
+    private var newSessionChip: some View {
+        sectionButton("newsession") {
+            Text("\u{FF0B}")   // ＋ — open a fresh second orch session for this project
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(Color(hex: 0x2563eb))
+        }
+        .help("Open a new orch session for this project")
+    }
+
     private var remoteChip: some View {
         sectionButton("remote") {
             HStack(spacing: 5) {
@@ -237,11 +259,14 @@ struct StatusBarView: View {
 
     private var historyChip: some View {
         sectionButton("history") {
+            // Truncate the last command by default (keeping the tail visible);
+            // widen on hover to show more of it.
             Text(model.data.lastCommand ?? "")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(dim)
                 .lineLimit(1)
-                .frame(maxWidth: 300, alignment: .leading)
+                .truncationMode(.head)
+                .frame(maxWidth: hover == "history" ? 520 : 200, alignment: .trailing)
         }
     }
 
@@ -338,63 +363,11 @@ struct StatusBarView: View {
         .onHover { hovering in
             if hovering {
                 NSCursor.pointingHand.push()
+                hover = section
             } else {
                 NSCursor.pop()
+                if hover == section { hover = "" }
             }
-        }
-    }
-}
-
-// MARK: - Wrapping flow layout
-
-/// Lays chips out left-to-right, wrapping to a new row when the current row
-/// runs out of width. Reports the total height so the bar can grow to two lines.
-struct BarFlow: Layout {
-    var hSpacing: CGFloat = 0
-    var vSpacing: CGFloat = 2
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
-        let maxWidth = proposal.width ?? .infinity
-        var rowWidth: CGFloat = 0
-        var rowHeight: CGFloat = 0
-        var totalHeight: CGFloat = 0
-        var maxRowWidth: CGFloat = 0
-        for subview in subviews {
-            let s = subview.sizeThatFits(.unspecified)
-            if rowWidth > 0, rowWidth + hSpacing + s.width > maxWidth {
-                totalHeight += rowHeight + vSpacing
-                maxRowWidth = max(maxRowWidth, rowWidth)
-                rowWidth = s.width
-                rowHeight = s.height
-            } else {
-                rowWidth += (rowWidth > 0 ? hSpacing : 0) + s.width
-                rowHeight = max(rowHeight, s.height)
-            }
-        }
-        totalHeight += rowHeight
-        maxRowWidth = max(maxRowWidth, rowWidth)
-        let width = proposal.width ?? maxRowWidth
-        return CGSize(width: width, height: totalHeight)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) {
-        let maxWidth = bounds.width
-        var x = bounds.minX
-        var y = bounds.minY
-        var rowHeight: CGFloat = 0
-        for subview in subviews {
-            let s = subview.sizeThatFits(.unspecified)
-            if x > bounds.minX, x + hSpacing + s.width > bounds.minX + maxWidth {
-                x = bounds.minX
-                y += rowHeight + vSpacing
-                rowHeight = 0
-            } else if x > bounds.minX {
-                x += hSpacing
-            }
-            subview.place(at: CGPoint(x: x, y: y), anchor: .topLeading,
-                          proposal: ProposedViewSize(width: s.width, height: s.height))
-            x += s.width
-            rowHeight = max(rowHeight, s.height)
         }
     }
 }
