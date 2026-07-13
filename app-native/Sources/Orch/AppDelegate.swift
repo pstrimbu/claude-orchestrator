@@ -28,13 +28,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     private var statusBarState = StatusBarState()
     private var statusBarModel = StatusBarModel()
     private var terminalView: TerminalView!
+    private var statusBarHost: NSHostingView<StatusBarView>!
 
+    private var sessionSize = SessionSizeService()
     private var statusTimer: Timer?
     private var gitPollTimer: Timer?
+    private var sizePollTimer: Timer?
+    private var prPollTimer: Timer?
     private var lastPtyOutputTime: Date = .distantPast
     private var lastCommand = ""
     private var inputBuffer = ""
     private var remoteControlEnabled = false
+
+    // Attention state: Claude emitted output responding to the user, then went
+    // quiet — it's the user's turn. Cleared when they type or output resumes.
+    private var sawOutputSinceInput = false
+    private var lastUserInputTime: Date = .distantPast
+    // Burn-rate sampling: (cumulative tokens, timestamp) of the previous sample.
+    private var lastTokenSample: (tokens: Int, time: Date)?
+    // Status bar height, grows to a second line when chips wrap.
+    private var statusBarHeight: CGFloat = 28
 
     // Keep signal sources alive
     private var sigUsr1Source: DispatchSourceSignal?
@@ -161,6 +174,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         gitPollTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
             self?.pollGitInfo()
         }
+        pollSessionSize()
+        sizePollTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
+            self?.pollSessionSize()
+        }
+        pollPR()
+        prPollTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+            self?.pollPR()
+        }
 
         // Handle SIGUSR1 — focus window
         signal(SIGUSR1, SIG_IGN)
@@ -204,6 +225,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             self?.openSection(section)
         }
         let statusBar = NSHostingView(rootView: StatusBarView(model: statusBarModel))
+        statusBarHost = statusBar
         statusBar.translatesAutoresizingMaskIntoConstraints = false
 
         // Window — create first so we can constrain to its contentView
@@ -235,18 +257,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         container.layer?.backgroundColor = NSColor(red: 0x1e/255, green: 0x1e/255, blue: 0x1e/255, alpha: 1).cgColor
         let cw = container.bounds.width
         let ch = container.bounds.height
-        let statusH: CGFloat = 28
+        let statusH = statusBarHeight
 
-        statusBar.translatesAutoresizingMaskIntoConstraints = true
-        statusBar.frame = NSRect(x: 0, y: ch - statusH, width: cw, height: statusH)
-        statusBar.autoresizingMask = [.width, .minYMargin]
-
+        // Terminal is frame-based (SwiftTerm renders best that way). A fixed top
+        // margin equal to the bar height is preserved on window resize.
         terminalView.translatesAutoresizingMaskIntoConstraints = true
         terminalView.frame = NSRect(x: 0, y: 0, width: cw, height: ch - statusH)
         terminalView.autoresizingMask = [.width, .height]
-
         container.addSubview(terminalView)
+
+        // Status bar sizes itself to its content (one line, or two when the
+        // chips wrap). We pin width + top with Auto Layout and let its intrinsic
+        // height drive; a frame-change observer repositions the terminal below.
+        statusBar.sizingOptions = [.intrinsicContentSize]
         container.addSubview(statusBar)
+        NSLayoutConstraint.activate([
+            statusBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            statusBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            statusBar.topAnchor.constraint(equalTo: container.topAnchor),
+        ])
+        statusBar.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(statusBarFrameChanged),
+            name: NSView.frameDidChangeNotification, object: statusBar)
         window.isReleasedWhenClosed = false
         window.titlebarAppearsTransparent = true
 
@@ -302,6 +335,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         if let str = String(bytes: bytes, encoding: .utf8), handleHotkey(str) {
             return
         }
+
+        // Any keystroke means the user is engaged — clear the "your turn" state.
+        sawOutputSinceInput = false
+        lastUserInputTime = Date()
 
         // Track user input to capture last command
         if let str = String(bytes: bytes, encoding: .utf8) {
@@ -524,6 +561,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         if !bytes.isEmpty {
             appendScrollback(bytes)
             lastPtyOutputTime = Date()
+            sawOutputSinceInput = true
 
             // Save absolute viewport row before feed so we can restore it if
             // the user is reading scrollback. SwiftTerm otherwise snaps yDisp
@@ -635,14 +673,112 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
 
     // MARK: - Git polling
 
+    /// The status bar grew or shrank (chips wrapped to a second line, or back).
+    /// Give the reclaimed space to the terminal below it.
+    @objc private func statusBarFrameChanged() {
+        guard let container = window?.contentView, statusBarHost != nil else { return }
+        let h = statusBarHost.frame.height
+        guard h > 0, abs(h - statusBarHeight) > 0.5 else { return }
+        statusBarHeight = h
+        terminalView.frame = NSRect(x: 0, y: 0, width: container.bounds.width,
+                                    height: container.bounds.height - h)
+        forceRepaint()
+    }
+
     private func pollGitInfo() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
-            let branch = self.shellOutput("git rev-parse --abbrev-ref HEAD", cwd: self.config.projectPath)
-            let status = self.shellOutput("git status --short", cwd: self.config.projectPath)
+            let cwd = self.config.projectPath
+            let branch = self.shellOutput("git rev-parse --abbrev-ref HEAD", cwd: cwd)
+            let status = self.shellOutput("git status --short", cwd: cwd)
+            // Ahead/behind vs upstream (blank when no upstream is configured).
+            var ahead = 0, behind = 0
+            if let counts = self.shellOutput("git rev-list --count --left-right @{u}...HEAD 2>/dev/null", cwd: cwd)?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !counts.isEmpty {
+                let parts = counts.split(whereSeparator: { $0 == "\t" || $0 == " " })
+                if parts.count == 2 { behind = Int(parts[0]) ?? 0; ahead = Int(parts[1]) ?? 0 }
+            }
+            // Working-tree churn (staged + unstaged) vs HEAD.
+            var added = 0, removed = 0
+            if let stat = self.shellOutput("git diff HEAD --shortstat 2>/dev/null", cwd: cwd) {
+                added = self.firstInt(in: stat, before: "insertion")
+                removed = self.firstInt(in: stat, before: "deletion")
+            }
             DispatchQueue.main.async {
                 self.statusBarState.gitBranch = branch ?? ""
                 self.statusBarState.gitDirty = !(status ?? "").isEmpty
+                self.statusBarState.gitAhead = ahead
+                self.statusBarState.gitBehind = behind
+                self.statusBarState.diffAdded = added
+                self.statusBarState.diffRemoved = removed
+            }
+        }
+    }
+
+    /// Parse the integer immediately preceding a word in a `git --shortstat`
+    /// line, e.g. "3 files changed, 42 insertions(+), 5 deletions(-)".
+    private func firstInt(in text: String, before word: String) -> Int {
+        guard let range = text.range(of: word) else { return 0 }
+        let head = text[..<range.lowerBound]
+        let digits = head.reversed().drop(while: { $0 == " " }).prefix(while: { $0.isNumber })
+        return Int(String(digits.reversed())) ?? 0
+    }
+
+    /// Poll the current branch's PR (open state + check rollup) via `gh`, on a
+    /// slower cadence than git since it hits the network.
+    private func pollPR() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            let out = self.shellOutput(
+                "gh pr view --json number,state,statusCheckRollup 2>/dev/null", cwd: self.config.projectPath)
+            var number = 0
+            var checks = ""
+            if let out = out, let d = out.data(using: .utf8),
+               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+               (o["state"] as? String) == "OPEN", let n = o["number"] as? Int {
+                number = n
+                if let rollup = o["statusCheckRollup"] as? [[String: Any]], !rollup.isEmpty {
+                    var anyFail = false, anyPending = false
+                    for c in rollup {
+                        let concl = (c["conclusion"] as? String ?? "").uppercased()
+                        let stat = (c["status"] as? String ?? "").uppercased()
+                        if stat != "COMPLETED" && !stat.isEmpty { anyPending = true }
+                        if concl == "FAILURE" || concl == "TIMED_OUT" || concl == "CANCELLED" { anyFail = true }
+                    }
+                    checks = anyFail ? "failing" : (anyPending ? "pending" : "passing")
+                }
+            }
+            DispatchQueue.main.async {
+                self.statusBarState.prNumber = number
+                self.statusBarState.prChecks = checks
+                self.sendStatusUpdate()
+            }
+        }
+    }
+
+    // Read the current session's context size from its transcript (off-main),
+    // then push into the status bar. Cheap: re-parses only when the transcript
+    // changes and reads just the tail.
+    private func pollSessionSize() {
+        let sid = sessionStore.currentSessionId(childPid: session?.childPid ?? 0)
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self, let m = self.sessionSize.readMetrics(sessionId: sid) else { return }
+            DispatchQueue.main.async {
+                self.statusBarState.contextTokens = m.tokens
+                self.statusBarState.contextLimit = m.limit
+                self.statusBarState.contextModel = m.model
+                self.statusBarState.costUSD = m.costUSD
+                self.statusBarState.bgAgents = m.bgAgents
+                // Burn rate: cumulative-token delta since the last sample, per
+                // minute. Zeroes between turns (the chip then hides).
+                let now = Date()
+                if let prev = self.lastTokenSample {
+                    let dt = now.timeIntervalSince(prev.time)
+                    let dTok = max(0, m.cumulativeTokens - prev.tokens)
+                    if dt >= 1 { self.statusBarState.burnRate = Int(Double(dTok) / dt * 60.0) }
+                }
+                self.lastTokenSample = (m.cumulativeTokens, now)
+                self.sendStatusUpdate()
             }
         }
     }
@@ -651,8 +787,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
 
     private func sendStatusUpdate() {
         window?.title = "orch \u{2014} \(config.projectName)"
+        let idle = Date().timeIntervalSince(lastPtyOutputTime)
+        let active = idle < 2
+        // "Your turn": Claude produced output responding to you and has been
+        // quiet for a few seconds. Cleared once you type or output resumes.
+        let attention = sawOutputSinceInput && !active && idle >= 3
         statusBarModel.data = StatusBarData(
-            claudeActive: Date().timeIntervalSince(lastPtyOutputTime) < 2,
+            claudeActive: active,
             projectName: config.projectName,
             timeElapsed: clockify.formatElapsed(),
             timeRecording: clockify.recording,
@@ -664,7 +805,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             gitDirty: statusBarState.gitDirty,
             sessionLabel: sessionLabel(),
             lastCommand: lastCommand,
-            remoteActive: remoteControlEnabled
+            remoteActive: remoteControlEnabled,
+            contextTokens: statusBarState.contextTokens,
+            contextLimit: statusBarState.contextLimit,
+            model: statusBarState.contextModel ?? "",
+            costUSD: statusBarState.costUSD,
+            burnRate: statusBarState.burnRate,
+            bgAgents: statusBarState.bgAgents,
+            gitAhead: statusBarState.gitAhead,
+            gitBehind: statusBarState.gitBehind,
+            diffAdded: statusBarState.diffAdded,
+            diffRemoved: statusBarState.diffRemoved,
+            prNumber: statusBarState.prNumber,
+            prChecks: statusBarState.prChecks,
+            attention: attention
         )
     }
 
@@ -695,6 +849,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
                 onSessionSwitch: { [weak self] mode in self?.switchSession(mode) },
                 onUpdate: { [weak self] in self?.sendStatusUpdate() }
             )
+        case "size":
+            showSessionSizeOverlay(
+                overlay: overlay,
+                session: session,
+                state: statusBarState,
+                onRestart: { [weak self] in self?.handleCtrlR() },
+                onUpdate: { [weak self] in self?.sendStatusUpdate() })
+        case "model":
+            // Open Claude Code's model picker in the session.
+            session?.write([UInt8]("/model\r".utf8))
+        case "push":
+            let cwd = config.projectPath
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                _ = self?.shellOutput("git push 2>&1", cwd: cwd)
+                DispatchQueue.main.async { self?.pollGitInfo() }
+            }
+        case "pr":
+            let cwd = config.projectPath
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                _ = self?.shellOutput("gh pr view --web 2>/dev/null", cwd: cwd)
+            }
         case "remote":
             toggleRemoteControl()
         case "history":
@@ -801,6 +976,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         }
         statusTimer?.invalidate()
         gitPollTimer?.invalidate()
+        sizePollTimer?.invalidate()
+        prPollTimer?.invalidate()
+        sizePollTimer?.invalidate()
         clockify?.destroy()
         session?.kill()
         try? FileManager.default.removeItem(atPath: config.orchDir + "/orch.pid")
