@@ -162,23 +162,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         Log.log("terminal size: \(terminal.cols)x\(terminal.rows)")
         spawnSession(cols: terminal.cols, rows: terminal.rows)
 
-        // Start polling
+        // Start polling. Register on the run loop in `.common` mode so the
+        // pollers keep firing during AppKit event-tracking (mouse tracking,
+        // scrolling, menus). A plain `Timer.scheduledTimer` runs in `.default`
+        // mode only and stalls during interaction — that's how the status bar
+        // (and the size/cost readout) go stale after extended use and miss a
+        // `/compact` that happens mid-interaction.
         pollGitInfo()
         sendStatusUpdate()
-        statusTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.sendStatusUpdate()
-        }
-        gitPollTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
-            self?.pollGitInfo()
-        }
+        statusTimer = scheduleCommon(every: 1.0) { [weak self] in self?.sendStatusUpdate() }
+        gitPollTimer = scheduleCommon(every: 10.0) { [weak self] in self?.pollGitInfo() }
         pollSessionSize()
-        sizePollTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
-            self?.pollSessionSize()
-        }
+        sizePollTimer = scheduleCommon(every: 2.0) { [weak self] in self?.pollSessionSize() }
         pollPR()
-        prPollTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
-            self?.pollPR()
-        }
+        prPollTimer = scheduleCommon(every: 30.0) { [weak self] in self?.pollPR() }
 
         // Handle SIGUSR1 — focus window
         signal(SIGUSR1, SIG_IGN)
@@ -333,6 +330,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
                     lastCommand = cmd
                     history.append(cmd)
                     sendStatusUpdate()
+                    // A `/compact` or `/clear` shrinks the context a few seconds
+                    // later; nudge the size poll so the readout drops promptly
+                    // instead of waiting on the next tick.
+                    if cmd.hasPrefix("/compact") || cmd.hasPrefix("/clear") {
+                        for delay in [3.0, 8.0] {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                                self?.pollSessionSize()
+                            }
+                        }
+                    }
                 }
                 inputBuffer = ""
             } else if str == "\u{7f}" {
@@ -727,6 +734,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
                 self.sendStatusUpdate()
             }
         }
+    }
+
+    /// Schedule a repeating timer that fires in `.common` run-loop mode, so it
+    /// keeps ticking while AppKit is tracking events (unlike the `.default`-only
+    /// `Timer.scheduledTimer`). Fires once immediately is the caller's job.
+    private func scheduleCommon(every interval: TimeInterval, _ block: @escaping () -> Void) -> Timer {
+        let t = Timer(timeInterval: interval, repeats: true) { _ in block() }
+        RunLoop.main.add(t, forMode: .common)
+        return t
     }
 
     // Read the current session's context size from its transcript (off-main),
