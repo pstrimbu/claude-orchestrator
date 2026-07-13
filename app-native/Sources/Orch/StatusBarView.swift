@@ -314,10 +314,11 @@ struct StatusBarView: View {
     }
 
     private var costLabel: String {
+        // "~" — this is an estimate at standard API rates, not a bill.
         let c = model.data.costUSD
-        if c >= 100 { return String(format: "$%.0f", c) }
-        if c >= 10 { return String(format: "$%.1f", c) }
-        return String(format: "$%.2f", c)
+        if c >= 100 { return String(format: "~$%.0f", c) }
+        if c >= 10 { return String(format: "~$%.1f", c) }
+        return String(format: "~$%.2f", c)
     }
 
     private func shortTokens(_ t: Int) -> String {
