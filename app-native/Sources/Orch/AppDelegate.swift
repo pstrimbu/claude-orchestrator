@@ -768,6 +768,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
             let buckets = self.sessionSize.hourlyUsage(sessionId: sid)
+            Log.log("pollUsage sid=\(sid ?? "nil") total=\(buckets.reduce(0, +)) buckets=\(buckets.count)")
             DispatchQueue.main.async {
                 self.statusBarState.usage24h = buckets
                 self.sendStatusUpdate()
