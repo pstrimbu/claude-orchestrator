@@ -161,6 +161,7 @@ class PanelController {
         collapseTimer = nil
 
         viewModel.showingPortalPicker = false
+        viewModel.showingProjectPicker = false
         viewModel.isExpanded = false
         viewModel.stopPolling()
         layoutPanel(expanded: false)
@@ -198,6 +199,21 @@ class PanelController {
             return event
         }
 
+        // Keyboard: Cmd+Z / Cmd+Shift+Z for undo/redo (only when our panel is key)
+        NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            guard let self else { return event }
+            if event.modifierFlags.contains(.command),
+               event.charactersIgnoringModifiers?.lowercased() == "z" {
+                if event.modifierFlags.contains(.shift) {
+                    self.viewModel.redo()
+                } else {
+                    self.viewModel.undo()
+                }
+                return nil  // consume
+            }
+            return event
+        }
+
         // Safety net poll using GCD timer
         let pollTimer = DispatchSource.makeTimerSource(queue: .main)
         pollTimer.schedule(deadline: .now() + 0.5, repeating: 0.2)
@@ -212,7 +228,7 @@ class PanelController {
     /// Excludes the right 100px where action buttons (cascade, settings, add) live.
     private func isInTitlebarDragArea(_ screenPoint: NSPoint) -> Bool {
         let panelFrame = panel.frame
-        let buttonsWidth: CGFloat = 100
+        let buttonsWidth: CGFloat = 190
         let dragRect = NSRect(
             x: panelFrame.minX,
             y: panelFrame.maxY - titlebarHeight,
@@ -250,6 +266,7 @@ class PanelController {
                     isPendingDrag = false
                     // Collapse to thin strip while dragging
                     viewModel.showingPortalPicker = false
+                    viewModel.showingProjectPicker = false
                     viewModel.isExpanded = false
                     // Recalculate origin for collapsed size, keeping mouse relative position
                     let collapsedHeight = viewModel.targetHeight()

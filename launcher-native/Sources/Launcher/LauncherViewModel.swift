@@ -7,10 +7,62 @@ final class LauncherViewModel: ObservableObject {
     @Published var projects: [ProjectEntry] = []
     @Published var isExpanded = false
     @Published var showingPortalPicker = false
+    @Published var showingProjectPicker = false
     @Published var pendingPortals: Set<String> = []  // portal names currently starting/stopping
+    @Published var canUndo = false
+    @Published var canRedo = false
     private var removedNames: Set<String> = []  // recently removed — suppress from poll results
 
     private var pollTimer: Timer?
+
+    // MARK: - Undo/Redo
+
+    struct LauncherSnapshot {
+        var projects: [ProjectEntry]
+        var hiddenPortals: [String]
+    }
+    private var undoStack: [LauncherSnapshot] = []
+    private var redoStack: [LauncherSnapshot] = []
+    private let maxUndo = 50
+
+    private func currentSnapshot() -> LauncherSnapshot {
+        LauncherSnapshot(projects: projects, hiddenPortals: ConfigStore.loadHiddenPortals().hidden)
+    }
+
+    /// Capture the current state onto the undo stack before a mutating action.
+    private func recordUndo() {
+        undoStack.append(currentSnapshot())
+        if undoStack.count > maxUndo { undoStack.removeFirst() }
+        redoStack.removeAll()
+        updateUndoRedoFlags()
+    }
+
+    private func updateUndoRedoFlags() {
+        canUndo = !undoStack.isEmpty
+        canRedo = !redoStack.isEmpty
+    }
+
+    private func applySnapshot(_ snap: LauncherSnapshot) {
+        removedNames.removeAll()
+        projects = snap.projects
+        ConfigStore.saveProjects(projects)
+        ConfigStore.saveHiddenPortals(HiddenPortals(hidden: snap.hiddenPortals))
+        refreshStatuses()
+    }
+
+    func undo() {
+        guard let snap = undoStack.popLast() else { return }
+        redoStack.append(currentSnapshot())
+        applySnapshot(snap)
+        updateUndoRedoFlags()
+    }
+
+    func redo() {
+        guard let snap = redoStack.popLast() else { return }
+        undoStack.append(currentSnapshot())
+        applySnapshot(snap)
+        updateUndoRedoFlags()
+    }
 
     init() {
         projects = ConfigStore.loadProjects()
@@ -32,6 +84,10 @@ final class LauncherViewModel: ObservableObject {
 
     func reloadProjects() {
         removedNames.removeAll()
+        // Config changed on disk out from under us — undo history no longer applies.
+        undoStack.removeAll()
+        redoStack.removeAll()
+        updateUndoRedoFlags()
         projects = ConfigStore.loadProjects()
         refreshStatuses()
     }
@@ -66,26 +122,51 @@ final class LauncherViewModel: ObservableObject {
     func addProject(path: String) {
         let name = (path as NSString).lastPathComponent
         guard !projects.contains(where: { $0.path == path }) else { return }
+        recordUndo()
         projects.append(ProjectEntry(path: path, name: name))
+        // If this project was previously removed, un-suppress it and un-hide its
+        // matching portal so it reappears fully.
+        removedNames.remove(name)
+        var cfg = ConfigStore.loadHiddenPortals()
+        if let idx = cfg.hidden.firstIndex(of: name) {
+            cfg.hidden.remove(at: idx)
+            ConfigStore.saveHiddenPortals(cfg)
+        }
         ConfigStore.saveProjects(projects)
         refreshStatuses()
     }
 
     func removeProject(path: String) {
+        guard projects.contains(where: { $0.path == path }) else { return }
+        recordUndo()
         let name = (path as NSString).lastPathComponent
         removedNames.insert(name)
         projects.removeAll { $0.path == path }
         apps.removeAll { $0.sessionPath == path || ($0.sessionPath == nil && $0.portalName == name) }
-        let snapshot = projects
-        DispatchQueue.global(qos: .utility).async {
-            ConfigStore.saveProjects(snapshot)
-            // Also hide matching portal so it doesn't reappear as standalone
-            var cfg = ConfigStore.loadHiddenPortals()
-            if !cfg.hidden.contains(name) {
-                cfg.hidden.append(name)
-                ConfigStore.saveHiddenPortals(cfg)
-            }
+        ConfigStore.saveProjects(projects)
+        // Also hide matching portal so it doesn't reappear as standalone.
+        // Done synchronously so a fast undo can't race the async write.
+        var cfg = ConfigStore.loadHiddenPortals()
+        if !cfg.hidden.contains(name) {
+            cfg.hidden.append(name)
+            ConfigStore.saveHiddenPortals(cfg)
         }
+    }
+
+    /// Directories under ~/dev that aren't already registered as projects.
+    func getUnregisteredProjects() -> [ProjectEntry] {
+        let dev = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("dev").path
+        let existing = Set(projects.map { $0.path })
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dev) else { return [] }
+        var result: [ProjectEntry] = []
+        for name in names {
+            if name.hasPrefix(".") { continue }
+            let full = "\(dev)/\(name)"
+            guard SystemUtils.directoryExists(full), !existing.contains(full) else { continue }
+            result.append(ProjectEntry(path: full, name: name))
+        }
+        return result.sorted { $0.name.lowercased() < $1.name.lowercased() }
     }
 
     func openProject(path: String) {
@@ -151,6 +232,7 @@ final class LauncherViewModel: ObservableObject {
     }
 
     func setPortalVisibility(name: String, visible: Bool) {
+        recordUndo()
         var cfg = ConfigStore.loadHiddenPortals()
         if visible {
             cfg.hidden.removeAll { $0 == name }

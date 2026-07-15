@@ -99,17 +99,25 @@ struct ExpandedView: View {
                     .foregroundColor(.dim)
                 Spacer()
                 HStack(spacing: 4) {
+                    TitlebarButton(icon: "\u{21B6}", tooltip: "Undo", enabled: viewModel.canUndo) {
+                        viewModel.undo()
+                    }
+                    TitlebarButton(icon: "\u{21B7}", tooltip: "Redo", enabled: viewModel.canRedo) {
+                        viewModel.redo()
+                    }
                     TitlebarButton(icon: "\u{25AE}", tooltip: "Cascade windows") {
                         viewModel.cascadeWindows()
                     }
                     TitlebarButton(icon: "\u{2699}", tooltip: "Show hidden portal") {
+                        viewModel.showingProjectPicker = false
                         viewModel.showingPortalPicker = true
                     }
                     TitlebarButton(icon: "\u{21BB}", tooltip: "Reload config") {
                         viewModel.reloadProjects()
                     }
                     TitlebarButton(icon: "+", tooltip: "Add project") {
-                        onAddProject()
+                        viewModel.showingPortalPicker = false
+                        viewModel.showingProjectPicker.toggle()
                     }
                 }
             }
@@ -124,6 +132,8 @@ struct ExpandedView: View {
             ScrollView {
                 if viewModel.showingPortalPicker {
                     PortalPickerView(viewModel: viewModel)
+                } else if viewModel.showingProjectPicker {
+                    ProjectPickerView(viewModel: viewModel, onBrowse: onAddProject)
                 } else if viewModel.apps.isEmpty {
                     Text("Click + to add a project")
                         .font(.system(size: 12))
@@ -146,16 +156,18 @@ struct ExpandedView: View {
 struct TitlebarButton: View {
     let icon: String
     let tooltip: String
+    var enabled: Bool = true
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        Button(action: { if enabled { action() } }) {
             Text(icon)
                 .font(.system(size: 14))
-                .foregroundColor(.accent2)
+                .foregroundColor(enabled ? .accent2 : .dim.opacity(0.35))
                 .frame(width: 26, height: 26)
         }
         .buttonStyle(.plain)
+        .disabled(!enabled)
         .background(
             RoundedRectangle(cornerRadius: 4)
                 .stroke(Color.sep, lineWidth: 1)
@@ -447,5 +459,66 @@ struct PortalPickerView: View {
             }
             .padding(.vertical, 4)
         }
+    }
+}
+
+// MARK: - Project Picker (add unregistered ~/dev projects)
+
+struct ProjectPickerView: View {
+    @ObservedObject var viewModel: LauncherViewModel
+    var onBrowse: () -> Void
+
+    var body: some View {
+        let entries = viewModel.getUnregisteredProjects()
+        VStack(spacing: 2) {
+            // Browse for an arbitrary folder (outside ~/dev)
+            HStack {
+                Text("Browse for folder\u{2026}")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.dim)
+                Spacer()
+                ActionButton(label: "Browse", style: .focus) {
+                    viewModel.showingProjectPicker = false
+                    onBrowse()
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(Color.rowBg)
+            )
+            .padding(.horizontal, 4)
+
+            if entries.isEmpty {
+                Text("All ~/dev projects added")
+                    .font(.system(size: 12))
+                    .foregroundColor(.dim)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+            } else {
+                ForEach(entries) { entry in
+                    HStack {
+                        Text(entry.name)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.fg)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer()
+                        ActionButton(label: "Add", style: .open) {
+                            viewModel.addProject(path: entry.path)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(Color.rowBg)
+                    )
+                    .padding(.horizontal, 4)
+                }
+            }
+        }
+        .padding(.vertical, 4)
     }
 }
