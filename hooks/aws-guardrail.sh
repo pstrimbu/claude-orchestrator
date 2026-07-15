@@ -4,10 +4,10 @@
 # PreToolUse guardrail for Bash commands. Configured in ~/.claude/settings.json
 # (USER scope) so it runs on EVERY Bash tool call in EVERY project for this user.
 #
-# Why this exists: orch workers launch `claude --dangerously-skip-permissions`
-# and can reach prod AWS creds across accounts 2906 / 9324 / 3893. PreToolUse
-# hooks still fire and can hard-block even in bypassPermissions mode, so this is
-# the one safety net that survives skip-permissions.
+# Why this exists: orch sessions launch `claude --dangerously-skip-permissions`,
+# which can reach live cloud credentials. PreToolUse hooks still fire and can
+# hard-block even in bypassPermissions mode, so this is the one safety net that
+# survives skip-permissions.
 #
 # Tiers:
 #   DENY -> hard block, cannot proceed (catastrophic / never-legitimate)
@@ -46,8 +46,19 @@ WB='(^|[^[:alnum:]_])'
 # inside "deleted", etc. — flagging read-only commands like `grep stopped`.
 WE='([^[:alnum:]_]|$)'
 
-# Shared-infra PROD identifiers (see ~/.claude/CLAUDE.md).
-PROD='REDACTED-IP|REDACTED-HOST|REDACTED-RDS-ENDPOINT|REDACTED-IP|REDACTED-EC2-INSTANCE|REDACTED-EC2-INSTANCE'
+# Your production identifiers — hosts, IPs, DB endpoints, instance IDs that a
+# mutating command should never touch without a human confirming. Supply them
+# yourself; nothing is baked in. Either:
+#   ORCH_PROD_IDENTIFIERS      — regex alternation, e.g. '10\.0\.0\.1|db\.example\.com'
+#   ORCH_PROD_IDENTIFIERS_FILE — file of one identifier per line ('#' comments ok)
+#                                (default: ~/.config/orch/prod-identifiers.txt)
+# If neither is provided, the prod-host rule below is skipped; every other rule
+# still applies.
+PROD="${ORCH_PROD_IDENTIFIERS:-}"
+PROD_FILE="${ORCH_PROD_IDENTIFIERS_FILE:-$HOME/.config/orch/prod-identifiers.txt}"
+if [ -z "$PROD" ] && [ -f "$PROD_FILE" ]; then
+  PROD="$(grep -vE '^[[:space:]]*(#|$)' "$PROD_FILE" 2>/dev/null | paste -sd'|' -)"
+fi
 # Mutating verbs used to gate prod-host confirmation.
 # - verbs are word-bounded on BOTH sides (else `grep stopped` reads as a stop)
 # - systemctl only counts for state-changing subcommands (`systemctl status` is a read)
@@ -114,8 +125,8 @@ m '(docker[[:space:]]+system[[:space:]]+prune|docker[[:space:]]+volume[[:space:]
 m "(git[[:space:]]+push[[:space:]]+.*(--force|${WB}-[[:alnum:]]*f)|git[[:space:]]+reset[[:space:]]+--hard|git[[:space:]]+clean[[:space:]]+-[[:alnum:]]*f|git[[:space:]]+branch[[:space:]]+-D)" \
   && { emit ask "Confirm: destructive git op (force-push / hard reset / clean -f / branch -D)."; exit 0; }
 
-# a mutating command aimed at shared PROD infra
-if m "($PROD)" && m "$MUTATE"; then
+# a mutating command aimed at shared PROD infra (only when identifiers configured)
+if [ -n "$PROD" ] && m "($PROD)" && m "$MUTATE"; then
   emit ask "Confirm: mutating command targeting shared PROD infrastructure."; exit 0
 fi
 

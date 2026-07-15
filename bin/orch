@@ -57,9 +57,10 @@ load_env() {
   done < "$file"
 }
 
-# Centralized Linear API keys (Strimbu LINEAR_API_KEY + TravelMinds LINEAR_API_KEY_TM)
-# from AWS Secrets Manager (cached). Sourced before project .env so a project can
-# still override via its own .env if ever needed.
+# Optional local credential hook. If you'd rather keep API keys in a secret
+# manager than in a .env file, drop a script here that exports them (see
+# docs/project-config.md). Sourced before the project .env so a project can
+# still override. Absent by default — .env alone is a fine setup.
 [ -f "$HOME/.config/orch/load-linear-env.sh" ] && . "$HOME/.config/orch/load-linear-env.sh"
 
 load_env "$PROJECT_PATH/.env"

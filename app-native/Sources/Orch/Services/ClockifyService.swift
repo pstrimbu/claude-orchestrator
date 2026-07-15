@@ -27,7 +27,15 @@ class ClockifyService {
         summaryProvider = provider
     }
 
-    var enabled: Bool { config.clockifyApiKey != nil }
+    // All three are required to talk to the API — a key alone can't address a
+    // workspace, so treat a partial config as "not set up" rather than 404ing.
+    var enabled: Bool {
+        config.clockifyApiKey != nil && config.clockifyWorkspaceId != nil && config.clockifyUserId != nil
+    }
+
+    // Safe to default here: every call site is behind `guard enabled`.
+    private var workspaceId: String { config.clockifyWorkspaceId ?? "" }
+    private var userId: String { config.clockifyUserId ?? "" }
 
     var elapsed: TimeInterval {
         if !recording || startTime == nil { return accumulated }
@@ -145,7 +153,7 @@ class ClockifyService {
         guard enabled else { return [] }
         do {
             let projectId = try await ensureProject()
-            let data = try await api("GET", path: "/workspaces/\(config.clockifyWorkspaceId)/user/\(config.clockifyUserId)/time-entries?page-size=\(limit)&project=\(projectId)")
+            let data = try await api("GET", path: "/workspaces/\(workspaceId)/user/\(userId)/time-entries?page-size=\(limit)&project=\(projectId)")
             return (try? JSONDecoder().decode([ClockifyTimeEntry].self, from: data)) ?? []
         } catch { return [] }
     }
@@ -154,7 +162,7 @@ class ClockifyService {
         if let pid = clockifyProjectId { return pid }
 
         let encoded = config.projectId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? config.projectId
-        let data = try await api("GET", path: "/workspaces/\(config.clockifyWorkspaceId)/projects?name=\(encoded)")
+        let data = try await api("GET", path: "/workspaces/\(workspaceId)/projects?name=\(encoded)")
         let projects = (try? JSONDecoder().decode([ClockifyProject].self, from: data)) ?? []
 
         if let match = projects.first(where: { $0.name == config.projectId }) {
@@ -163,7 +171,7 @@ class ClockifyService {
         }
 
         let body = try JSONEncoder().encode(["name": config.projectId])
-        let createData = try await api("POST", path: "/workspaces/\(config.clockifyWorkspaceId)/projects", body: body)
+        let createData = try await api("POST", path: "/workspaces/\(workspaceId)/projects", body: body)
         let created = try JSONDecoder().decode(ClockifyProject.self, from: createData)
         clockifyProjectId = created.id
         return created.id
@@ -179,7 +187,7 @@ class ClockifyService {
             "projectId": projectId,
         ]
         let bodyData = try JSONEncoder().encode(body)
-        let data = try await api("POST", path: "/workspaces/\(config.clockifyWorkspaceId)/time-entries", body: bodyData)
+        let data = try await api("POST", path: "/workspaces/\(workspaceId)/time-entries", body: bodyData)
         return try JSONDecoder().decode(ClockifyTimeEntry.self, from: data)
     }
 

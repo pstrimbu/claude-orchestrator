@@ -120,12 +120,12 @@ export class Config {
     return process.env.CLOCKIFY_API_KEY;
   }
 
-  get clockifyWorkspaceId(): string {
-    return 'REDACTED-CLOCKIFY-WORKSPACE-ID';
+  get clockifyWorkspaceId(): string | undefined {
+    return process.env.CLOCKIFY_WORKSPACE_ID;
   }
 
-  get clockifyUserId(): string {
-    return 'REDACTED-CLOCKIFY-USER-ID';
+  get clockifyUserId(): string | undefined {
+    return process.env.CLOCKIFY_USER_ID;
   }
 
   // Linear

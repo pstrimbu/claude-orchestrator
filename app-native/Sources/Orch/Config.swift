@@ -111,8 +111,10 @@ class Config {
 
     var clockifyApiKey: String? { ProcessInfo.processInfo.environment["CLOCKIFY_API_KEY"] }
 
-    var clockifyWorkspaceId: String { "REDACTED-CLOCKIFY-WORKSPACE-ID" }
-    var clockifyUserId: String { "REDACTED-CLOCKIFY-USER-ID" }
+    // Your Clockify workspace/user. Find them via `GET api.clockify.me/api/v1/user`
+    // (`activeWorkspace` and `id`). Time tracking stays disabled until both are set.
+    var clockifyWorkspaceId: String? { ProcessInfo.processInfo.environment["CLOCKIFY_WORKSPACE_ID"] }
+    var clockifyUserId: String? { ProcessInfo.processInfo.environment["CLOCKIFY_USER_ID"] }
 
     var linearApiKey: String? {
         let envVar = linearConfig?.auth?.api_key_env ?? "LINEAR_API_KEY"

@@ -18,14 +18,19 @@ rm -f "$CACHE"
 # shellcheck disable=SC1090
 source "$LOADER"
 
-if [ -f "$CACHE" ] && [ -n "${LINEAR_API_KEY:-}" ] && [ -n "${LINEAR_API_KEY_TM:-}" ]; then
-  echo "Refreshed Linear keys from AWS Secrets Manager -> $CACHE"
-  echo "  LINEAR_API_KEY    (${#LINEAR_API_KEY} chars)  [Strimbu]"
-  echo "  LINEAR_API_KEY_TM (${#LINEAR_API_KEY_TM} chars)  [TravelMinds]"
-  echo "New orch sessions and shells pick this up automatically."
-  echo "For your *current* shell: source \"$LOADER\""
-else
-  echo "orch-linear-refresh: FAILED to fetch from Secrets Manager." >&2
-  echo "  Check AWS creds for profile 'peter.strimbu.cli.REDACTED-AWS-ACCOUNT'." >&2
+if [ ! -f "$CACHE" ] || [ -z "${LINEAR_API_KEY:-}" ]; then
+  echo "orch-linear-refresh: FAILED to fetch keys via the loader." >&2
+  echo "  Check that $LOADER can reach your secret store" >&2
+  echo "  (e.g. valid AWS credentials, if it reads Secrets Manager)." >&2
   exit 1
 fi
+
+echo "Refreshed Linear keys -> $CACHE"
+# Report every LINEAR_API_KEY* the loader exported; keys are never printed,
+# only their lengths. Workspaces vary per user, so nothing is assumed here.
+for var in $(compgen -v | grep -E '^LINEAR_API_KEY' | sort); do
+  val="${!var:-}"
+  [ -n "$val" ] && printf '  %-20s (%d chars)\n' "$var" "${#val}"
+done
+echo "New orch sessions and shells pick this up automatically."
+echo "For your *current* shell: source \"$LOADER\""

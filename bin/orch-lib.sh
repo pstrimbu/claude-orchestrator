@@ -268,8 +268,10 @@ orch_jira_enabled() {
 # --- Clockify time tracking ---
 
 CLOCKIFY_BASE_URL="https://api.clockify.me/api/v1"
-CLOCKIFY_WORKSPACE_ID="REDACTED-CLOCKIFY-WORKSPACE-ID"
-CLOCKIFY_USER_ID="REDACTED-CLOCKIFY-USER-ID"
+# Set these in .env. Find them via `GET api.clockify.me/api/v1/user`
+# (`activeWorkspace` and `id`). Empty means time tracking is not configured.
+CLOCKIFY_WORKSPACE_ID="${CLOCKIFY_WORKSPACE_ID:-}"
+CLOCKIFY_USER_ID="${CLOCKIFY_USER_ID:-}"
 
 orch_clockify_dir() {
     local dir="${ORCH_STATE_DIR:-.orch}/clockify"
