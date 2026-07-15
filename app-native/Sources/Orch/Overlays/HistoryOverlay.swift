@@ -1,7 +1,8 @@
 import Foundation
 
-func showHistoryOverlay(overlay: OverlayManager, history: CommandHistoryService, session: ClaudeSession, onUpdate: @escaping () -> Void) {
-    let entries = history.getRecent(30).reversed()
+func showHistoryOverlay(overlay: OverlayManager, history: CommandHistoryService, session: ClaudeSession,
+                        sessionId: String?, onUpdate: @escaping () -> Void) {
+    let entries = history.getRecent(30, session: sessionId).reversed()
     var items: [OverlayItem] = []
 
     if entries.isEmpty {

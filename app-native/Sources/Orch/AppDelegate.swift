@@ -36,6 +36,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     private var prPollTimer: Timer?
     private var lastPtyOutputTime: Date = .distantPast
     private var lastCommand = ""
+    private var restoredLastCommand = false
     private var inputBuffer = ""
     private var remoteControlEnabled = false
 
@@ -89,15 +90,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         history = CommandHistoryService(orchDir: config.orchDir)
         sessionStore = SessionStore(projectPath: projectPath)
 
-        // Restore last command from history
-        if let last = history.getRecent(1).last {
-            lastCommand = last.cmd
-        }
-
         // Wire up Clockify summary provider
         clockify.setSummaryProvider { [weak self] in
             guard let self = self else { return "Active work" }
-            let entries = self.history.getSinceLastFlush()
+            let session = self.resolveSessionId()
+            let entries = self.history.getSinceLastFlush(session: session)
             if entries.isEmpty { return "Active work on \(self.config.projectId)" }
             let cmds = Array(Set(entries.map(\.cmd))).suffix(20)
             let cmdList = cmds.joined(separator: "\n")
@@ -135,13 +132,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
                     let text = (String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     if !text.isEmpty {
-                        self.history.markFlushed()
+                        self.history.markFlushed(session: session)
                         return text.count > 120 ? String(text.prefix(117)) + "..." : text
                     }
                 }
             } catch {}
 
-            self.history.markFlushed()
+            self.history.markFlushed(session: session)
             let summary = cmds.suffix(5).joined(separator: "; ")
             return summary.count > 120 ? String(summary.prefix(117)) + "..." : summary
         }
@@ -328,7 +325,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
                 let cmd = inputBuffer.trimmingCharacters(in: .whitespaces)
                 if !cmd.isEmpty {
                     lastCommand = cmd
-                    history.append(cmd)
+                    history.append(cmd, session: resolveSessionId())
                     sendStatusUpdate()
                     // No /compact nudge needed: Claude re-runs the statusLine
                     // command once compaction finishes, so the next poll tick
@@ -746,11 +743,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         return t
     }
 
+    /// Seed the status bar's last command from this window's own history.
+    /// Can't be done at launch: a --continue/--resume window doesn't know its
+    /// session id until it's discovered, so retry until one resolves. A fresh
+    /// (--session-id) window resolves immediately and simply has no history.
+    private func restoreLastCommandIfNeeded() {
+        guard !restoredLastCommand, let sid = resolveSessionId() else { return }
+        restoredLastCommand = true
+        if lastCommand.isEmpty, let last = history.getRecent(1, session: sid).last {
+            lastCommand = last.cmd
+            sendStatusUpdate()
+        }
+    }
+
     // Read the session's live metrics (off-main) from the JSON Claude Code
     // reports via its statusLine hook, then push into the status bar. Cheap:
     // re-parses only when Claude rewrites the file, which it does after each
     // assistant message and after `/compact` finishes.
     private func pollSessionSize() {
+        restoreLastCommandIfNeeded()
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self, let m = self.sessionSize.read(projectPath: self.projectPath) else { return }
             DispatchQueue.main.async {
@@ -875,6 +886,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             toggleRemoteControl()
         case "history":
             showHistoryOverlay(overlay: overlay, history: history, session: session,
+                               sessionId: resolveSessionId(),
                                onUpdate: { [weak self] in self?.sendStatusUpdate() })
         case "prompt":
             showPromptBuilderOverlay(overlay: overlay, config: config, session: session)
@@ -899,6 +911,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         terminalView.feed(byteArray: [UInt8]("\u{1b}c".utf8)[...])
         forceRepaint()
         scrollbackBuf = ""
+        // History is scoped per session, so the incoming one starts from its own
+        // last command rather than inheriting the outgoing session's.
+        lastCommand = ""
+        restoredLastCommand = false
         let terminal = terminalView.getTerminal()
         session = ClaudeSession(
             projectPath: projectPath,
