@@ -7,3 +7,5 @@ app/src/main/version.ts
 .releases/
 launcher-native/.build/
 launcher-native/orch-launcher
+__pycache__/
+*.pyc
