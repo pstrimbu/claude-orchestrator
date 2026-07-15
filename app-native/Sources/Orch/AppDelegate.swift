@@ -44,7 +44,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     private var sawOutputSinceInput = false
     private var lastUserInputTime: Date = .distantPast
     // Burn-rate sampling: (cumulative tokens, timestamp) of the previous sample.
-    private var lastTokenSample: (tokens: Int, time: Date)?
+    private var lastCostSample: (cost: Double, time: Date)?
 
     // Keep signal sources alive
     private var sigUsr1Source: DispatchSourceSignal?
@@ -330,16 +330,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
                     lastCommand = cmd
                     history.append(cmd)
                     sendStatusUpdate()
-                    // A `/compact` or `/clear` shrinks the context a few seconds
-                    // later; nudge the size poll so the readout drops promptly
-                    // instead of waiting on the next tick.
-                    if cmd.hasPrefix("/compact") || cmd.hasPrefix("/clear") {
-                        for delay in [3.0, 8.0] {
-                            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                                self?.pollSessionSize()
-                            }
-                        }
-                    }
+                    // No /compact nudge needed: Claude re-runs the statusLine
+                    // command once compaction finishes, so the next poll tick
+                    // picks up the smaller context on its own.
                 }
                 inputBuffer = ""
             } else if str == "\u{7f}" {
@@ -753,28 +746,36 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         return t
     }
 
-    // Read the current session's context size from its transcript (off-main),
-    // then push into the status bar. Cheap: re-parses only when the transcript
-    // changes and reads just the tail.
+    // Read the session's live metrics (off-main) from the JSON Claude Code
+    // reports via its statusLine hook, then push into the status bar. Cheap:
+    // re-parses only when Claude rewrites the file, which it does after each
+    // assistant message and after `/compact` finishes.
     private func pollSessionSize() {
-        let sid = resolveSessionId()
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self = self, let m = self.sessionSize.readMetrics(sessionId: sid) else { return }
+            guard let self = self, let m = self.sessionSize.read(projectPath: self.projectPath) else { return }
             DispatchQueue.main.async {
                 self.statusBarState.contextTokens = m.tokens
                 self.statusBarState.contextLimit = m.limit
                 self.statusBarState.contextModel = m.model
+                self.statusBarState.contextFraction = m.fraction
                 self.statusBarState.costUSD = m.costUSD
                 self.statusBarState.bgAgents = m.bgAgents
-                // Burn rate: cumulative-token delta since the last sample, per
-                // minute. Zeroes between turns (the chip then hides).
+                // PR/CI stays on `gh` (pollPR): statusLine reports only
+                // pr.review_state — human review, not check results — so it
+                // can't source the chip's pass/fail mark. `gh` is a stable
+                // public CLI, so it was never part of the fragility problem.
+                //
+                // Burn rate: spend since the last sample, in $/hour. Claude only
+                // gives us cumulative cost (context size isn't cumulative), and
+                // cost is the more useful signal anyway. Zeroes between turns,
+                // which hides the chip.
                 let now = Date()
-                if let prev = self.lastTokenSample {
+                if let prev = self.lastCostSample {
                     let dt = now.timeIntervalSince(prev.time)
-                    let dTok = max(0, m.cumulativeTokens - prev.tokens)
-                    if dt >= 1 { self.statusBarState.burnRate = Int(Double(dTok) / dt * 60.0) }
+                    let dCost = max(0, m.costUSD - prev.cost)
+                    if dt >= 1 { self.statusBarState.burnUSDPerHour = dCost / dt * 3600.0 }
                 }
-                self.lastTokenSample = (m.cumulativeTokens, now)
+                self.lastCostSample = (m.costUSD, now)
                 self.sendStatusUpdate()
             }
         }
@@ -805,9 +806,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             remoteActive: remoteControlEnabled,
             contextTokens: statusBarState.contextTokens,
             contextLimit: statusBarState.contextLimit,
+            contextFraction: statusBarState.contextFraction,
             model: statusBarState.contextModel ?? "",
             costUSD: statusBarState.costUSD,
-            burnRate: statusBarState.burnRate,
+            burnUSDPerHour: statusBarState.burnUSDPerHour,
             bgAgents: statusBarState.bgAgents,
             gitAhead: statusBarState.gitAhead,
             gitBehind: statusBarState.gitBehind,

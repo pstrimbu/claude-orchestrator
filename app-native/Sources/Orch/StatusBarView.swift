@@ -16,9 +16,10 @@ struct StatusBarData {
     var remoteActive = false
     var contextTokens = 0
     var contextLimit = 1_000_000
+    var contextFraction = 0.0     // Claude's own used_percentage/100 when available
     var model = ""
     var costUSD = 0.0
-    var burnRate = 0              // tokens/min
+    var burnUSDPerHour = 0.0
     var bgAgents = 0
     var gitAhead = 0
     var gitBehind = 0
@@ -48,7 +49,7 @@ struct StatusBarView: View {
             if !model.data.model.isEmpty { modelChip; separator }
             sizeChip
             if model.data.costUSD > 0 { costChip }
-            if model.data.burnRate > 0 { burnChip }
+            if model.data.burnUSDPerHour > 0 { burnChip }
             separator
             timeChip
             separator
@@ -132,11 +133,11 @@ struct StatusBarView: View {
 
     private var burnChip: some View {
         sectionButton("size") {
-            Text("\(shortTokens(model.data.burnRate))/m")
+            Text(burnLabel)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(dim)
         }
-        .help("Token burn rate")
+        .help("Current spend rate")
     }
 
     private var timeChip: some View {
@@ -281,6 +282,7 @@ struct StatusBarView: View {
     }
 
     private var contextFraction: Double {
+        if model.data.contextFraction > 0 { return model.data.contextFraction }
         let limit = model.data.contextLimit
         return limit > 0 ? Double(model.data.contextTokens) / Double(limit) : 0
     }
@@ -314,17 +316,18 @@ struct StatusBarView: View {
     }
 
     private var costLabel: String {
-        // "~" — this is an estimate at standard API rates, not a bill.
+        // "~" — Claude computes this client-side and says it may differ from the
+        // actual bill, so present it as an estimate.
         let c = model.data.costUSD
         if c >= 100 { return String(format: "~$%.0f", c) }
         if c >= 10 { return String(format: "~$%.1f", c) }
         return String(format: "~$%.2f", c)
     }
 
-    private func shortTokens(_ t: Int) -> String {
-        if t >= 1_000_000 { return String(format: "%.1fM", Double(t) / 1_000_000) }
-        if t >= 1_000 { return "\(Int((Double(t) / 1000).rounded()))k" }
-        return "\(t)"
+    private var burnLabel: String {
+        let r = model.data.burnUSDPerHour
+        if r >= 10 { return String(format: "$%.0f/h", r) }
+        return String(format: "$%.1f/h", r)
     }
 
     private var prMark: String {

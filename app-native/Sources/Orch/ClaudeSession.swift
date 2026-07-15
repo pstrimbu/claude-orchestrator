@@ -36,6 +36,42 @@ class ClaudeSession {
         self.remoteName = remoteName
     }
 
+    /// Where Claude Code drops its own status JSON for us. See `statusSettings()`.
+    static func statusFile(projectPath: String) -> String { projectPath + "/.orch/statusline.json" }
+    static func subagentFile(projectPath: String) -> String { projectPath + "/.orch/subagents.json" }
+
+    private func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// Settings injected via `--settings`, scoped to this spawned process only.
+    ///
+    /// Claude Code pipes a documented JSON blob (context window, cost, model, PR
+    /// state) to a statusLine command after every assistant message and after
+    /// `/compact` finishes. We ask it to dump that JSON to a file and print
+    /// nothing — its own status row stays empty and orch renders the values in
+    /// the native bar instead.
+    ///
+    /// This replaces parsing the session transcript, which the Claude Code docs
+    /// warn is "internal to Claude Code and changes between versions, so scripts
+    /// that parse these files directly can break on any release."
+    ///
+    /// `cat > tmp && mv -f` makes each write atomic, so our poller never reads a
+    /// half-written file. The user's own statusLine (if any) is untouched: this
+    /// applies only to sessions orch spawns.
+    private func statusSettings() -> String? {
+        func dumpTo(_ path: String) -> [String: String] {
+            let tmp = shellQuote(path + ".tmp"), dst = shellQuote(path)
+            return ["type": "command", "command": "cat > \(tmp) && mv -f \(tmp) \(dst)"]
+        }
+        let settings: [String: Any] = [
+            "statusLine": dumpTo(Self.statusFile(projectPath: projectPath)),
+            "subagentStatusLine": dumpTo(Self.subagentFile(projectPath: projectPath)),
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: settings) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
     func spawn() {
         let claudePath = resolveClaudePath()
         Log.log("using claude at: \(claudePath)")
@@ -68,6 +104,9 @@ class ClaudeSession {
             args.append("--remote-control")
             if let name = remoteName, !name.isEmpty { args.append(name) }
         }
+
+        // Have Claude report its own status to us (see statusSettings()).
+        if let settings = statusSettings() { args += ["--settings", settings] }
 
         // Set up PTY
         var winSize = winsize(

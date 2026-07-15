@@ -14,7 +14,11 @@ func showSessionSizeOverlay(
 
     let tokens = state.contextTokens
     let limit = state.contextLimit
-    let pct = limit > 0 ? Int((Double(tokens) / Double(limit) * 100).rounded()) : 0
+    // Prefer Claude's own used_percentage so this agrees with `/context` and
+    // with the status bar; fall back to dividing only if it hasn't reported one.
+    let pct = state.contextFraction > 0
+        ? Int((state.contextFraction * 100).rounded())
+        : (limit > 0 ? Int((Double(tokens) / Double(limit) * 100).rounded()) : 0)
 
     func fmt(_ n: Int) -> String {
         if n >= 1_000_000 {

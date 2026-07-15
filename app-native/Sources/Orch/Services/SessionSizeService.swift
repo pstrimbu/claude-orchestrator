@@ -1,205 +1,116 @@
 import Foundation
 
-/// Reads the current Claude session's context size (token usage) from its
-/// transcript JSONL. Claude Code writes one transcript per session at
-/// ~/.claude/projects/<munged-project-path>/<sessionId>.jsonl and records
-/// per-message `message.usage`. The context size for the latest turn is
-/// input_tokens + cache_creation_input_tokens + cache_read_input_tokens — the
-/// same figure Claude Code's own "context left" gauge uses.
+/// Reads the current session's live metrics from the JSON Claude Code reports
+/// via its `statusLine` hook (see `ClaudeSession.statusSettings()`), rather than
+/// parsing the session transcript.
 ///
-/// Session UUIDs are globally unique across project dirs, so we locate the
-/// transcript by globbing rather than replicating Claude's path munging.
-struct SessionSize {
-    let tokens: Int
-    let model: String?
-    let limit: Int
-    var fraction: Double { limit > 0 ? Double(tokens) / Double(limit) : 0 }
-}
-
-/// Richer per-session metrics derived from the same transcript: context size
-/// (as `SessionSize`), a running USD cost estimate, cumulative billed tokens
-/// (for burn-rate sampling), and a best-effort count of in-flight background
-/// agents (Task tool calls without a matching result yet).
+/// Why: the Claude Code docs state the transcript format is "internal to Claude
+/// Code and changes between versions, so scripts that parse these files directly
+/// can break on any release." The statusLine payload is a documented contract,
+/// and its numbers are authoritative — `cost.total_cost_usd` and
+/// `context_window.used_percentage` come from Claude's own accounting rather
+/// than our re-derivation of it.
+///
+/// Claude rewrites the file after every assistant message and after `/compact`
+/// finishes, so polling it is cheap and picks up compaction for free.
 struct SessionMetrics {
-    let tokens: Int
-    let model: String?
-    let limit: Int
-    let costUSD: Double
-    let cumulativeTokens: Int
-    let bgAgents: Int
-    var fraction: Double { limit > 0 ? Double(tokens) / Double(limit) : 0 }
-}
+    let tokens: Int              // tokens currently in the context window
+    let model: String?           // display name, e.g. "Opus"
+    let limit: Int               // context_window_size
+    let costUSD: Double          // Claude's own client-side estimate
+    let bgAgents: Int            // in-flight subagents
+    /// Claude's pre-calculated percentage. Nil early in a session and right
+    /// after `/compact`, until the next API call repopulates usage.
+    let usedPercentage: Double?
 
-/// Per-million-token rates. Cache write is 1.25× input, cache read 0.1× input.
-private struct ModelPricing {
-    let input: Double, output: Double, cacheWrite: Double, cacheRead: Double
+    var fraction: Double {
+        if let p = usedPercentage { return p / 100 }
+        return limit > 0 ? Double(tokens) / Double(limit) : 0
+    }
 }
 
 final class SessionSizeService {
-    private var cachedPath: (sessionId: String, path: String)?
-    private var cacheMtime: TimeInterval = -1
-    private var cached: SessionSize?
-    private var metricsMtime: TimeInterval = -1
-    private var metricsCached: SessionMetrics?
+    private var statusMtime: TimeInterval = -1
+    private var subagentMtime: TimeInterval = -1
+    private var cached: SessionMetrics?
+    private var cachedAgents = 0
 
-    /// Context-window limit per model. This setup runs the 1M-context ([1m])
-    /// tiers of these models; Haiku is 200k. Tune here if your tier differs.
-    static func contextLimit(model: String?) -> Int {
-        guard let m = model?.lowercased() else { return 1_000_000 }
-        if m.contains("haiku") { return 200_000 }
-        return 1_000_000
-    }
+    /// Read the latest metrics for a project's session. Cheap to call
+    /// repeatedly: re-parses only when Claude has rewritten the file. Returns
+    /// nil until the first assistant message produces a status payload.
+    func read(projectPath: String) -> SessionMetrics? {
+        let agents = readAgents(projectPath: projectPath)
 
-    /// Read the latest context size for a session. Cheap to call repeatedly:
-    /// re-parses only when the transcript's mtime changes, and reads just the
-    /// tail of the file. Returns nil if no transcript/usage is found yet.
-    func read(sessionId: String?) -> SessionSize? {
-        guard let sessionId = sessionId, !sessionId.isEmpty else { return nil }
-        guard let path = transcriptPath(sessionId: sessionId) else { return cached }
-
+        let path = ClaudeSession.statusFile(projectPath: projectPath)
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-              let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970,
-              let size = attrs[.size] as? Int else { return cached }
-        if mtime == cacheMtime, let c = cached { return c }
+              let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970
+        else { return cached }
 
-        guard let fh = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { return cached }
-        defer { try? fh.close() }
-
-        // Read only the tail — the last usage-bearing line is near the end.
-        let window = 1_000_000
-        let start = size > window ? UInt64(size - window) : 0
-        try? fh.seek(toOffset: start)
-        let data = (try? fh.readToEnd()) ?? Data()
-        // Lossy decode so a window that starts mid-UTF8 never yields nil; the
-        // leading partial line is skipped by JSON parsing anyway.
-        let text = String(decoding: data, as: UTF8.self)
-
-        for line in text.split(separator: "\n").reversed() {
-            guard line.contains("input_tokens"),
-                  let d = line.data(using: .utf8),
-                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-                  let msg = o["message"] as? [String: Any],
-                  let usage = msg["usage"] as? [String: Any] else { continue }
-            let inp = usage["input_tokens"] as? Int ?? 0
-            let cc = usage["cache_creation_input_tokens"] as? Int ?? 0
-            let cr = usage["cache_read_input_tokens"] as? Int ?? 0
-            let model = msg["model"] as? String
-            let result = SessionSize(
-                tokens: inp + cc + cr,
-                model: model,
-                limit: SessionSizeService.contextLimit(model: model)
+        // The agent count changes independently of the main payload, so refresh
+        // it on the cached path too rather than reporting a stale count.
+        if mtime == statusMtime, let c = cached {
+            guard agents != c.bgAgents else { return c }
+            let updated = SessionMetrics(
+                tokens: c.tokens, model: c.model, limit: c.limit, costUSD: c.costUSD,
+                bgAgents: agents, usedPercentage: c.usedPercentage
             )
-            cacheMtime = mtime
-            cached = result
-            return result
-        }
-        return cached
-    }
-
-    /// Approximate USD pricing per model (per-million-token rates from the
-    /// Anthropic pricing table; tune here if your tier differs). Defaults to
-    /// Opus-tier when the model is unknown.
-    private static func pricing(model: String?) -> ModelPricing {
-        let m = (model ?? "").lowercased()
-        let inM: Double, outM: Double
-        if m.contains("haiku") { inM = 1;  outM = 5 }
-        else if m.contains("sonnet") { inM = 3;  outM = 15 }
-        else if m.contains("fable") || m.contains("mythos") { inM = 10; outM = 50 }
-        else { inM = 5;  outM = 25 }  // opus / default
-        return ModelPricing(input: inM / 1e6, output: outM / 1e6,
-                            cacheWrite: inM * 1.25 / 1e6, cacheRead: inM * 0.1 / 1e6)
-    }
-
-    /// Read cumulative session metrics from the transcript. Cost and burn need
-    /// the whole file, so this reads more than `read()` (which only tails); it
-    /// still re-parses only when the transcript's mtime changes. Returns nil if
-    /// no transcript/usage exists yet.
-    func readMetrics(sessionId: String?) -> SessionMetrics? {
-        guard let sessionId = sessionId, !sessionId.isEmpty else { return nil }
-        guard let path = transcriptPath(sessionId: sessionId) else { return metricsCached }
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-              let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970,
-              let size = attrs[.size] as? Int else { return metricsCached }
-        if mtime == metricsMtime, let c = metricsCached { return c }
-
-        guard let fh = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { return metricsCached }
-        defer { try? fh.close() }
-        // Cap the read to the last 32 MB — cost/agents on a session older than
-        // that are an estimate anyway, and this bounds parse time.
-        let cap = 32 * 1024 * 1024
-        let start = size > cap ? UInt64(size - cap) : 0
-        try? fh.seek(toOffset: start)
-        let data = (try? fh.readToEnd()) ?? Data()
-        let text = String(decoding: data, as: UTF8.self)
-
-        var cost = 0.0
-        var cumulative = 0
-        var contextTokens = 0
-        var model: String?
-        var taskIds = Set<String>()      // Task tool_use ids seen
-        var resultIds = Set<String>()    // tool_result ids seen
-
-        for line in text.split(separator: "\n") {
-            guard let d = line.data(using: .utf8),
-                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-                  let msg = o["message"] as? [String: Any] else { continue }
-
-            if let usage = msg["usage"] as? [String: Any] {
-                let inp = usage["input_tokens"] as? Int ?? 0
-                let out = usage["output_tokens"] as? Int ?? 0
-                let cc = usage["cache_creation_input_tokens"] as? Int ?? 0
-                let cr = usage["cache_read_input_tokens"] as? Int ?? 0
-                let lineModel = msg["model"] as? String
-                let p = SessionSizeService.pricing(model: lineModel)
-                cost += Double(inp) * p.input + Double(out) * p.output
-                      + Double(cc) * p.cacheWrite + Double(cr) * p.cacheRead
-                cumulative += inp + out + cc + cr
-                contextTokens = inp + cc + cr  // last one wins
-                if let lm = lineModel { model = lm }
-            }
-
-            // Track in-flight background agents: Task tool_use without a result.
-            if let content = msg["content"] as? [[String: Any]] {
-                for block in content {
-                    let type = block["type"] as? String
-                    if type == "tool_use", (block["name"] as? String) == "Task",
-                       let id = block["id"] as? String {
-                        taskIds.insert(id)
-                    } else if type == "tool_result", let id = block["tool_use_id"] as? String {
-                        resultIds.insert(id)
-                    }
-                }
-            }
+            cached = updated
+            return updated
         }
 
-        let bgAgents = taskIds.subtracting(resultIds).count
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return cached }
+
+        let ctx = o["context_window"] as? [String: Any]
+        let cost = o["cost"] as? [String: Any]
+        let model = o["model"] as? [String: Any]
+
         let result = SessionMetrics(
-            tokens: contextTokens,
-            model: model,
-            limit: SessionSizeService.contextLimit(model: model),
-            costUSD: cost,
-            cumulativeTokens: cumulative,
-            bgAgents: bgAgents
+            tokens: ctx?["total_input_tokens"] as? Int ?? 0,
+            model: model?["display_name"] as? String ?? model?["id"] as? String,
+            // 200k default, 1M for extended-context models — Claude tells us which.
+            limit: ctx?["context_window_size"] as? Int ?? 200_000,
+            costUSD: cost?["total_cost_usd"] as? Double ?? 0,
+            bgAgents: agents,
+            usedPercentage: ctx?["used_percentage"] as? Double
         )
-        metricsMtime = mtime
-        metricsCached = result
+        statusMtime = mtime
+        cached = result
         return result
     }
 
-    private func transcriptPath(sessionId: String) -> String? {
-        if let c = cachedPath, c.sessionId == sessionId,
-           FileManager.default.fileExists(atPath: c.path) {
-            return c.path
+    /// Count in-flight subagents from the `subagentStatusLine` payload. Claude
+    /// only runs that command while agent rows are visible, so a payload that
+    /// has gone stale relative to the main status file means the panel is gone —
+    /// report zero rather than pinning the last count on screen forever.
+    private func readAgents(projectPath: String) -> Int {
+        let path = ClaudeSession.subagentFile(projectPath: projectPath)
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970
+        else { return 0 }
+
+        let statusPath = ClaudeSession.statusFile(projectPath: projectPath)
+        if let sAttrs = try? FileManager.default.attributesOfItem(atPath: statusPath),
+           let sMtime = (sAttrs[.modificationDate] as? Date)?.timeIntervalSince1970,
+           sMtime > mtime + 5 {
+            return 0
         }
-        let base = NSHomeDirectory() + "/.claude/projects"
-        guard let dirs = try? FileManager.default.contentsOfDirectory(atPath: base) else { return nil }
-        for dir in dirs {
-            let p = base + "/" + dir + "/" + sessionId + ".jsonl"
-            if FileManager.default.fileExists(atPath: p) {
-                cachedPath = (sessionId, p)
-                return p
-            }
-        }
-        return nil
+
+        if mtime == subagentMtime { return cachedAgents }
+
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tasks = o["tasks"] as? [[String: Any]]
+        else { return cachedAgents }
+
+        let running = tasks.filter { t in
+            let s = (t["status"] as? String ?? "").lowercased()
+            return s != "completed" && s != "failed" && s != "cancelled"
+        }.count
+
+        subagentMtime = mtime
+        cachedAgents = running
+        return running
     }
 }

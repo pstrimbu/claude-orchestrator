@@ -7,8 +7,11 @@ class StatusBarState {
     var contextTokens: Int = 0
     var contextLimit: Int = 1_000_000
     var contextModel: String?
+    // Claude's own used_percentage when it reports one, so the dot and the label
+    // agree with `/context` rather than with our own division.
+    var contextFraction: Double = 0
     var costUSD: Double = 0
-    var burnRate: Int = 0          // tokens/min
+    var burnUSDPerHour: Double = 0
     var bgAgents: Int = 0
     var gitAhead: Int = 0
     var gitBehind: Int = 0
