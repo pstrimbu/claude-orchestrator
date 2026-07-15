@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# orch-linear-refresh — force an immediate refresh of the cached Linear API keys
+# from AWS Secrets Manager, bypassing the loader's TTL. Run after rotating a key.
+#
+# Keys never printed; only lengths are shown for confirmation.
+
+LOADER="$HOME/.config/orch/load-linear-env.sh"
+CACHE="${ORCH_LINEAR_CACHE:-$HOME/.config/orch/linear.env}"
+
+if [ ! -f "$LOADER" ]; then
+  echo "orch-linear-refresh: loader not found: $LOADER" >&2
+  exit 1
+fi
+
+# Drop the cache so the loader is forced to fetch fresh values.
+rm -f "$CACHE"
+
+# shellcheck disable=SC1090
+source "$LOADER"
+
+if [ -f "$CACHE" ] && [ -n "${LINEAR_API_KEY:-}" ] && [ -n "${LINEAR_API_KEY_TM:-}" ]; then
+  echo "Refreshed Linear keys from AWS Secrets Manager -> $CACHE"
+  echo "  LINEAR_API_KEY    (${#LINEAR_API_KEY} chars)  [Strimbu]"
+  echo "  LINEAR_API_KEY_TM (${#LINEAR_API_KEY_TM} chars)  [TravelMinds]"
+  echo "New orch sessions and shells pick this up automatically."
+  echo "For your *current* shell: source \"$LOADER\""
+else
+  echo "orch-linear-refresh: FAILED to fetch from Secrets Manager." >&2
+  echo "  Check AWS creds for profile 'peter.strimbu.cli.REDACTED-AWS-ACCOUNT'." >&2
+  exit 1
+fi
