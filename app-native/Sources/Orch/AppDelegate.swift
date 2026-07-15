@@ -736,6 +736,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         }
     }
 
+    /// The session id for this window. Prefers the id we forced via --session-id
+    /// (exact, and immune to pid reuse); falls back to discovery for --continue,
+    /// where Claude chose the session itself.
+    private func resolveSessionId() -> String? {
+        if let id = session?.sessionId { return id }
+        return sessionStore.currentSessionId(childPid: session?.childPid ?? 0)
+    }
+
     /// Schedule a repeating timer that fires in `.common` run-loop mode, so it
     /// keeps ticking while AppKit is tracking events (unlike the `.default`-only
     /// `Timer.scheduledTimer`). Fires once immediately is the caller's job.
@@ -749,7 +757,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     // then push into the status bar. Cheap: re-parses only when the transcript
     // changes and reads just the tail.
     private func pollSessionSize() {
-        let sid = sessionStore.currentSessionId(childPid: session?.childPid ?? 0)
+        let sid = resolveSessionId()
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self, let m = self.sessionSize.readMetrics(sessionId: sid) else { return }
             DispatchQueue.main.async {
@@ -834,7 +842,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
                 overlay: overlay,
                 sessionStore: sessionStore,
                 session: session,
-                currentSessionId: sessionStore.currentSessionId(childPid: session.childPid),
+                currentSessionId: resolveSessionId(),
                 onSessionSwitch: { [weak self] mode in self?.switchSession(mode) },
                 onUpdate: { [weak self] in self?.sendStatusUpdate() }
             )
@@ -878,7 +886,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     }
 
     private func sessionLabel() -> String {
-        guard let id = sessionStore.currentSessionId(childPid: session.childPid) else { return "" }
+        guard let id = resolveSessionId() else { return "" }
         return String(id.prefix(8))
     }
 

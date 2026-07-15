@@ -4,6 +4,11 @@ class ClaudeSession {
     private var fileHandle: FileHandle?
     private(set) var childPid: pid_t = 0
     private(set) var running = false
+    /// The session id, when we know it authoritatively rather than by discovery:
+    /// minted here and forced via --session-id for a new session, or handed to us
+    /// for --resume. Nil for --continue, where Claude picks the most recent
+    /// session itself and the id has to be found from the transcript instead.
+    private(set) var sessionId: String?
     private var mode: SessionMode
     private let projectPath: String
     private let remoteControl: Bool
@@ -37,9 +42,23 @@ class ClaudeSession {
 
         var args = ["--dangerously-skip-permissions"]
         switch mode {
-        case .new: break
-        case .continue_: args.append("--continue")
-        case .resume(let id): args += ["--resume", id]
+        case .new:
+            // Mint the id and tell Claude to use it, rather than spawning and then
+            // trying to work out which session we got. Pids aren't involved, so
+            // this can't be fooled by pid reuse. Minted per spawn on purpose: a
+            // UUID that already has a transcript would collide, so the
+            // .continue_ -> .new retry below must not reuse an earlier one.
+            let id = UUID().uuidString.lowercased()
+            sessionId = id
+            args += ["--session-id", id]
+        case .continue_:
+            // Claude resolves "most recent conversation here" itself; we can't
+            // dictate the id, so leave it to be discovered.
+            sessionId = nil
+            args.append("--continue")
+        case .resume(let id):
+            sessionId = id
+            args += ["--resume", id]
         }
 
         // Remote Control: launch this session with `--remote-control [name]` so it
