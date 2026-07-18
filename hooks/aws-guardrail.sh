@@ -59,11 +59,35 @@ PROD_FILE="${ORCH_PROD_IDENTIFIERS_FILE:-$HOME/.config/orch/prod-identifiers.txt
 if [ -z "$PROD" ] && [ -f "$PROD_FILE" ]; then
   PROD="$(grep -vE '^[[:space:]]*(#|$)' "$PROD_FILE" 2>/dev/null | paste -sd'|' -)"
 fi
-# Mutating verbs used to gate prod-host confirmation.
-# - verbs are word-bounded on BOTH sides (else `grep stopped` reads as a stop)
-# - systemctl only counts for state-changing subcommands (`systemctl status` is a read)
-# - redirects only count when aimed at system dirs (`> /tmp/out` is not a prod mutation)
-MUTATE="${WB}(rm|drop|delete|truncate|stop|restart|reboot|kill|shutdown|mkfs|dd)${WE}|systemctl[[:space:]]+(stop|restart|disable|mask|kill)|>[[:space:]]*/(etc|usr|bin|sbin|boot|opt)/"
+# Destructive FORMS used to gate prod-host confirmation.
+#
+# This matches destructive *syntax*, not bare verbs. The previous version matched
+# any of rm|drop|delete|truncate|stop|restart|reboot|kill|shutdown as a standalone
+# word, which buried real warnings in routine noise:
+#   - `docker restart <svc>` on prod is normal ops, recoverable in seconds — it
+#     alone was 36% of all confirmations. Same for stop/kill/reboot. Removed.
+#   - drop/delete/kill appearing inside a quoted Python snippet, a SQL SELECT, or
+#     a git commit message ("Media tab polish: drop ...") all fired.
+#   - bare `rm` also matched the `--rm` flag in `docker run --rm`.
+#
+# What remains is irreversible data/resource loss. Measured against 2355 real
+# Bash calls: confirmations 80 -> 47, with DROP DATABASE / DROP USER / DELETE
+# FROM / delete-secret / route53 DELETE / docker rm -f / rsync --delete all
+# still caught.
+MUTATE="${WB}drop[[:space:]]+(table|database|schema|user|role|index)${WE}"
+MUTATE="$MUTATE|${WB}truncate[[:space:]]+table${WE}"
+MUTATE="$MUTATE|${WB}delete[[:space:]]+from${WE}"
+# AWS-CLI-style destructive verbs: delete-secret, terminate-instances, ...
+MUTATE="$MUTATE|${WB}(delete|terminate|destroy|purge)-[[:alnum:]-]+"
+# route53 / JSON change batches
+MUTATE="$MUTATE|\"Action\"[[:space:]]*:[[:space:]]*\"DELETE\""
+# rsync mirror-delete can wipe files on the target
+MUTATE="$MUTATE|--delete${WE}"
+# filesystem removal — leading class excludes the `--rm` docker flag
+MUTATE="$MUTATE|(^|[^-[:alnum:]_])rm${WE}"
+MUTATE="$MUTATE|${WB}(mkfs|dd|shutdown)${WE}"
+# redirects only count when aimed at system dirs (`> /tmp/out` is not a prod mutation)
+MUTATE="$MUTATE|>[[:space:]]*/(etc|usr|bin|sbin|boot|opt)/"
 
 # ======================= DENY tier =======================
 
@@ -82,8 +106,11 @@ if m "${WB}rm[[:space:]]+([^;&|]*[[:space:]])?-[[:alnum:]]*r" \
   emit deny "Blocked: recursive delete targeting a filesystem/home root path."; exit 0
 fi
 
-# raw disk write / format
-m "(${WB}mkfs|${WB}dd[[:space:]]+.*of=/dev/|>[[:space:]]*/dev/(disk|sd|nvme|rdisk))" \
+# raw disk write / format. Each arm must name an actual device: the bare-`mkfs`
+# arm hard-blocked any command that merely CONTAINED the string (a read-only
+# Python script whose regex listed it was denied), and a hard deny with no way
+# to proceed is the worst failure mode for a false positive.
+m "(${WB}mkfs[[:alnum:].]*[[:space:]][^;&|]*/dev/|${WB}dd[[:space:]]+.*of=/dev/|>[[:space:]]*/dev/(disk|sd|nvme|rdisk))" \
   && { emit deny "Blocked: write/format of a raw disk device."; exit 0; }
 
 # AWS security-control tampering
