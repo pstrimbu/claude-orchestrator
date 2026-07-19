@@ -318,9 +318,11 @@ final class LauncherViewModel: ObservableObject {
         //  - Everything else fills, in order: secondary-left, secondary-right, then
         //    the primary's left half only as overflow.
         var frontToBack: [Int32] = []
+        var stacks: [[Placement]] = []
 
         if !pinnedWins.isEmpty {
-            placeCascade(group: pinnedWins, in: rightHalf(primary), frontToBack: &frontToBack)
+            placeCascade(group: pinnedWins, in: rightHalf(primary),
+                         frontToBack: &frontToBack, stacks: &stacks)
         }
 
         if !otherWins.isEmpty {
@@ -343,7 +345,8 @@ final class LauncherViewModel: ObservableObject {
             for (zi, zone) in zones.enumerated() {
                 let cnt = per + (zi < rem ? 1 : 0)
                 guard cnt > 0 else { continue }
-                placeCascade(group: Array(otherWins[idx ..< idx + cnt]), in: zone, frontToBack: &frontToBack)
+                placeCascade(group: Array(otherWins[idx ..< idx + cnt]), in: zone,
+                             frontToBack: &frontToBack, stacks: &stacks)
                 idx += cnt
             }
         }
@@ -357,9 +360,71 @@ final class LauncherViewModel: ObservableObject {
             let delay = Double(k) * 0.04
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { kill(pid, SIGUSR2) }
         }
+        let settle = Double(raiseOrder.count) * 0.04 + 0.35
         if let front = frontToBack.first {
-            let settle = Double(raiseOrder.count) * 0.04 + 0.2
             DispatchQueue.main.asyncAfter(deadline: .now() + settle) { kill(front, SIGUSR1) }
+        }
+
+        // Phase 2: once the frames have landed, re-measure and align each stack by
+        // the windows' TOP edges. Phase 1 positions by the bottom edge assuming the
+        // requested size, but a window running an older orch build ignores the
+        // resize and keeps its own height — which throws the top staircase (and so
+        // the visible status bars) out of step. Re-aligning against the real sizes
+        // makes the spacing uniform regardless of whether the resize took.
+        let toAlign = stacks
+        DispatchQueue.main.asyncAfter(deadline: .now() + settle + 0.15) { [weak self] in
+            self?.alignStacks(toAlign)
+        }
+    }
+
+    /// One window's slot in a cascade, retained so the stack can be re-aligned
+    /// against the windows' real sizes after the frames land.
+    private struct Placement {
+        let path: String
+        let pid: Int32
+        let region: NSRect
+    }
+
+    /// Re-align each stack by top edge using the windows' measured sizes, so the
+    /// status-bar staircase is evenly stepped even when the windows differ in
+    /// height. Sends position only (no `focus`), preserving the z-order phase 1
+    /// established.
+    private func alignStacks(_ stacks: [[Placement]]) {
+        let margin: CGFloat = 8
+        let stepXTarget: CGFloat = 48
+        let stepYTarget: CGFloat = 60
+
+        for stack in stacks where !stack.isEmpty {
+            guard let region = stack.first?.region else { continue }
+            let sizes: [CGSize] = stack.map { p in
+                SystemUtils.getWindowBounds(pid: p.pid).map { CGSize(width: $0.width, height: $0.height) }
+                    ?? CGSize(width: 1200, height: 832)
+            }
+            let gaps = CGFloat(max(0, stack.count - 1))
+            let tallest = sizes.map(\.height).max() ?? 832
+            let widest  = sizes.map(\.width).max() ?? 1200
+
+            // Uniform steps that keep the whole staircase inside the region.
+            let stepX = gaps > 0 ? max(0, min(stepXTarget, (region.width  - margin * 2 - widest)  / gaps)) : 0
+            let stepY = gaps > 0 ? max(0, min(stepYTarget, (region.height - margin * 2 - tallest) / gaps)) : 0
+
+            // Front window (i == 0) lowest; each subsequent top sits stepY higher.
+            let firstTop = region.maxY - margin - stepY * gaps
+
+            for (i, p) in stack.enumerated() {
+                let size = sizes[i]
+                let rawX = region.minX + margin + stepX * CGFloat(i)
+                let rawY = firstTop + stepY * CGFloat(i) - size.height   // anchor by TOP
+                let x = min(max(rawX, region.minX), max(region.minX, region.maxX - size.width))
+                let y = min(max(rawY, region.minY), max(region.minY, region.maxY - size.height))
+
+                let orchDir = (p.path as NSString).appendingPathComponent(".orch")
+                let cmd: [String: Any] = ["x": Int(x), "y": Int(y)]
+                if let data = try? JSONSerialization.data(withJSONObject: cmd) {
+                    try? data.write(to: URL(fileURLWithPath: orchDir + "/window-cmd.json"))
+                }
+                kill(p.pid, SIGUSR2)
+            }
         }
     }
 
@@ -369,7 +434,7 @@ final class LauncherViewModel: ObservableObject {
     /// bar clears the window in front of it. Windows are hard-clamped inside the
     /// region so none can ever land off-screen.
     private func placeCascade(group: [(String, String, Int32)], in region: NSRect,
-                              frontToBack: inout [Int32]) {
+                              frontToBack: inout [Int32], stacks: inout [[Placement]]) {
         let margin: CGFloat = 8
         // Offsets sized so each window behind shows its top-left corner: enough
         // vertical to clear the ~28px title bar plus the 28px status bar, and
@@ -397,6 +462,7 @@ final class LauncherViewModel: ObservableObject {
         let startX = region.minX + margin
         let startY = region.minY + margin   // NS bottom edge of the front window
 
+        var stack: [Placement] = []
         for i in 0 ..< group.count {
             let (_, path, pid) = group[i]
             let x = min(max(startX + stepX * CGFloat(i), region.minX), region.maxX - winW)
@@ -410,7 +476,9 @@ final class LauncherViewModel: ObservableObject {
                 try? data.write(to: URL(fileURLWithPath: orchDir + "/window-cmd.json"))
             }
             frontToBack.append(pid)   // i == 0 (front) appended first
+            stack.append(Placement(path: path, pid: pid, region: region))
         }
+        stacks.append(stack)
     }
 
     // MARK: - Status Building
