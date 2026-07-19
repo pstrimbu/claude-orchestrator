@@ -89,7 +89,15 @@ mkdir -p "$BUNDLE_MACOS"
 
 # Copy the real binary into the bundle (not a symlink — codesign requires a regular file
 # so TCC can record a stable designated requirement for Camera/Mic permissions).
-if [ ! "$BINARY" -ef "$BUNDLE_MACOS/orch" ]; then
+#
+# Test -L first: `-ef` compares device+inode *after* resolving symlinks, so a
+# legacy bundle whose executable is a symlink to $BINARY compares equal and the
+# copy gets skipped forever. Such bundles can never be signed ("the main
+# executable or Info.plist must be a regular file"), so they keep whatever stale
+# signature they had, TCC can't record a grant against them, and every launch
+# re-prompts. Replacing the symlink with a real copy is what makes them signable.
+if [ -L "$BUNDLE_MACOS/orch" ] || [ ! "$BINARY" -ef "$BUNDLE_MACOS/orch" ]; then
+  rm -f "$BUNDLE_MACOS/orch"
   cp -f "$BINARY" "$BUNDLE_MACOS/orch"
 fi
 
@@ -119,9 +127,39 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc sign the bundle so TCC can prompt and remember permissions
+# Sign the bundle so TCC can prompt and remember permissions
 # (NSCameraUsageDescription has no effect on unsigned Mach-O binaries).
-codesign --force --sign - "$APP_BUNDLE" 2>/dev/null || true
+#
+# Sign with a real identity, not ad-hoc. An ad-hoc signature gives TCC no
+# certificate to key the grant against, so it falls back to recording the
+# cdhash — which changes on every rebuild, silently discarding every
+# permission you granted and re-prompting. With an identity the designated
+# requirement is (bundle id + certificate leaf), which survives rebuilds.
+#
+# Override with ORCH_SIGN_ID; otherwise use the first codesigning identity in
+# the keychain. Falls back to ad-hoc if none is available (prompts will recur).
+if [ -z "${ORCH_SIGN_ID:-}" ]; then
+  # `|| true` matters: under `set -euo pipefail` a failing lookup would abort
+  # the script instead of falling through to the ad-hoc path below.
+  ORCH_SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
+    | awk '/^[[:space:]]*1\)/ {print $2; exit}' || true)
+fi
+
+if [ -n "${ORCH_SIGN_ID:-}" ]; then
+  SIGN_TARGET="$ORCH_SIGN_ID"
+else
+  echo "orch: no codesigning identity found; falling back to ad-hoc signing." >&2
+  echo "      macOS will re-ask for permissions after every rebuild." >&2
+  SIGN_TARGET="-"
+fi
+
+# Don't silence codesign. A failure here leaves the bundle with a stale or
+# missing signature, which makes macOS re-prompt for permissions on every
+# single launch — the failure needs to be visible, not swallowed.
+if ! SIGN_ERR=$(codesign --force --sign "$SIGN_TARGET" "$APP_BUNDLE" 2>&1); then
+  echo "orch: codesign failed — macOS will re-ask for permissions every launch." >&2
+  echo "      $SIGN_ERR" >&2
+fi
 
 # Launch via open so macOS registers the bundle name for the dock
 LOGFILE="$PROJECT_PATH/.orch/orch.log"
