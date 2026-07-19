@@ -59,56 +59,90 @@ enum SystemUtils {
         return kill(pid, 0) == 0
     }
 
-    /// Check if a PID belongs to an orch process
-    static func isOrchProcess(_ pid: Int32) -> Bool {
-        let cmd = "ps -p \(pid) -o command= 2>/dev/null"
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", cmd]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        try? process.run()
-        process.waitUntilExit()
-        let stdout = (String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "").lowercased()
-        return stdout.contains("orch")
+    /// A one-shot snapshot of running processes (pid -> full command line).
+    ///
+    /// Status building looks up every project, so resolving each one with its own
+    /// `ps` invocation meant well over a hundred process spawns per refresh. Take
+    /// the snapshot once and answer all the lookups from memory instead.
+    struct ProcessSnapshot {
+        private let byPid: [Int32: String]
+
+        static func capture() -> ProcessSnapshot {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", "ps -axo pid=,command="]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+            try? process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+
+            var map: [Int32: String] = [:]
+            for line in String(decoding: data, as: UTF8.self).components(separatedBy: .newlines) {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard let sep = trimmed.firstIndex(of: " "),
+                      let pid = Int32(trimmed[trimmed.startIndex ..< sep]) else { continue }
+                map[pid] = String(trimmed[trimmed.index(after: sep)...])
+                    .trimmingCharacters(in: .whitespaces)
+            }
+            return ProcessSnapshot(byPid: map)
+        }
+
+        /// True when the pid's executable is the orch binary (guards against a
+        /// recycled PID in a stale pid file).
+        func isOrch(_ pid: Int32) -> Bool {
+            guard let cmd = byPid[pid] else { return false }
+            return Self.executableIsOrch(cmd)
+        }
+
+        /// Locate a project's orch process.
+        ///
+        /// A session is launched as `<bundle>/MacOS/orch <projectPath> [--continue]`,
+        /// so an exact argument match identifies the project unambiguously. The
+        /// bundle path (`<projectPath>/.orch/<name>.app/...`) is a fallback for
+        /// sessions started without the path argument. Degenerate paths are
+        /// rejected: a project registered at "/" would otherwise substring-match
+        /// every orch bundle and claim an unrelated window.
+        func orchPid(projectPath: String) -> Int32? {
+            guard projectPath.count > 1 else { return nil }
+            let marker = (projectPath as NSString).appendingPathComponent(".orch/")
+            var markerMatch: Int32?
+            for (pid, cmd) in byPid {
+                guard Self.executableIsOrch(cmd) else { continue }
+                if cmd.split(separator: " ").dropFirst().contains(where: { $0 == projectPath }) {
+                    return pid
+                }
+                if markerMatch == nil, cmd.contains(marker) { markerMatch = pid }
+            }
+            return markerMatch
+        }
+
+        private static func executableIsOrch(_ cmd: String) -> Bool {
+            let exe = cmd.split(separator: " ", maxSplits: 1).first.map(String.init) ?? cmd
+            return (exe as NSString).lastPathComponent == "orch"
+        }
     }
 
-    /// Get running PID for a project path
-    static func getRunningPid(projectPath: String) -> Int32? {
-        // Check PID file first
+    /// Get running PID for a project path, resolved against a process snapshot.
+    static func getRunningPid(projectPath: String, snapshot: ProcessSnapshot) -> Int32? {
+        // Trust the pid file when it points at a live orch process.
         let pidFile = (projectPath as NSString).appendingPathComponent(".orch/orch.pid")
         if let content = try? String(contentsOfFile: pidFile, encoding: .utf8),
            let pid = Int32(content.trimmingCharacters(in: .whitespacesAndNewlines)),
            pid > 0, isProcessRunning(pid) {
-            // Verify it's actually an orch process, not a recycled PID
-            if isOrchProcess(pid) {
-                return pid
-            }
+            if snapshot.isOrch(pid) { return pid }
             // Stale PID file — clean it up
             try? FileManager.default.removeItem(atPath: pidFile)
         }
 
-        // Fallback: ps
-        let projName = (projectPath as NSString).lastPathComponent
-        let cmd = "ps axo pid,command | grep -E 'orch-\(projName)' | grep -v grep | grep -v Helper | head -1"
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", cmd]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        try? process.run()
-        process.waitUntilExit()
+        // Fall back to the snapshot, which also covers a missing/stale pid file.
+        return snapshot.orchPid(projectPath: projectPath)
+    }
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let stdout = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !stdout.isEmpty,
-           let pidStr = stdout.split(separator: " ").first,
-           let pid = Int32(pidStr), pid > 0 {
-            return pid
-        }
-        return nil
+    /// Convenience for one-off lookups; captures its own snapshot.
+    static func getRunningPid(projectPath: String) -> Int32? {
+        getRunningPid(projectPath: projectPath, snapshot: .capture())
     }
 
     /// Resolve the absolute path to the `orch` CLI.

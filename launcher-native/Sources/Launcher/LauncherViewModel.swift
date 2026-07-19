@@ -280,8 +280,9 @@ final class LauncherViewModel: ObservableObject {
     // MARK: - Cascade
 
     func cascadeWindows() {
+        let procs = SystemUtils.ProcessSnapshot.capture()
         let running = projects.compactMap { p -> (String, String, Int32)? in
-            guard let pid = SystemUtils.getRunningPid(projectPath: p.path) else { return nil }
+            guard let pid = SystemUtils.getRunningPid(projectPath: p.path, snapshot: procs) else { return nil }
             return (p.name, p.path, pid)
         }.sorted(by: { $0.0 < $1.0 })
 
@@ -403,6 +404,9 @@ final class LauncherViewModel: ObservableObject {
     // MARK: - Status Building
 
     static func buildAppStatuses(projects: [ProjectEntry], pinned: Set<String> = []) -> [AppStatus] {
+        // One process snapshot + one lsof for the whole rebuild, instead of a `ps`
+        // (or a ps|grep pipeline) per project.
+        let procs = SystemUtils.ProcessSnapshot.capture()
         let listening = SystemUtils.getListeningPorts()
         let csvPortals = ConfigStore.loadPortsCsv()
         let portalCfg = ConfigStore.loadHiddenPortals()
@@ -443,7 +447,7 @@ final class LauncherViewModel: ObservableObject {
         var apps: [AppStatus] = []
 
         for proj in projects {
-            let pid = SystemUtils.getRunningPid(projectPath: proj.path)
+            let pid = SystemUtils.getRunningPid(projectPath: proj.path, snapshot: procs)
             let portal = portalByDir[proj.name].map { visiblePortals[$0] }
             if portal != nil {
                 usedPortals.insert(proj.name)
