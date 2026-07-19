@@ -106,23 +106,23 @@ struct ExpandedView: View {
                     .animation(.easeOut(duration: 0.1), value: hoverTip)
                 Spacer()
                 HStack(spacing: 4) {
-                    TitlebarButton(icon: "\u{21B6}", tooltip: "Undo", enabled: viewModel.canUndo, onTip: { hoverTip = $0 }) {
+                    TitlebarButton(icon: "\u{21B6}", tooltip: "Undo", enabled: viewModel.canUndo, hoverTip: $hoverTip) {
                         viewModel.undo()
                     }
-                    TitlebarButton(icon: "\u{21B7}", tooltip: "Redo", enabled: viewModel.canRedo, onTip: { hoverTip = $0 }) {
+                    TitlebarButton(icon: "\u{21B7}", tooltip: "Redo", enabled: viewModel.canRedo, hoverTip: $hoverTip) {
                         viewModel.redo()
                     }
-                    TitlebarButton(icon: "\u{25AE}", tooltip: "Organize windows", onTip: { hoverTip = $0 }) {
+                    TitlebarButton(icon: "\u{25AE}", tooltip: "Organize windows", hoverTip: $hoverTip) {
                         viewModel.cascadeWindows()
                     }
-                    TitlebarButton(icon: "\u{2699}", tooltip: "Show hidden portal", onTip: { hoverTip = $0 }) {
+                    TitlebarButton(icon: "\u{2699}", tooltip: "Show hidden portal", hoverTip: $hoverTip) {
                         viewModel.showingProjectPicker = false
                         viewModel.showingPortalPicker = true
                     }
-                    TitlebarButton(icon: "\u{21BB}", tooltip: "Reload config", onTip: { hoverTip = $0 }) {
+                    TitlebarButton(icon: "\u{21BB}", tooltip: "Reload config", hoverTip: $hoverTip) {
                         viewModel.reloadProjects()
                     }
-                    TitlebarButton(icon: "+", tooltip: "Add project", onTip: { hoverTip = $0 }) {
+                    TitlebarButton(icon: "+", tooltip: "Add project", hoverTip: $hoverTip) {
                         viewModel.showingPortalPicker = false
                         viewModel.showingProjectPicker.toggle()
                     }
@@ -164,9 +164,11 @@ struct TitlebarButton: View {
     let icon: String
     let tooltip: String
     var enabled: Bool = true
-    /// Reports the tooltip text on hover (nil when the cursor leaves), so the
-    /// parent can render it inline — see ExpandedView.hoverTip.
-    var onTip: ((String?) -> Void)? = nil
+    /// The parent's inline tip. This button sets it on enter and clears it on
+    /// exit — but only if it still holds *its own* tooltip. That guard makes
+    /// A→B moves reliable: SwiftUI may deliver B's enter before A's exit, and
+    /// without it A's late "exit" would wipe the tip B just set.
+    @Binding var hoverTip: String?
     let action: () -> Void
 
     var body: some View {
@@ -185,7 +187,8 @@ struct TitlebarButton: View {
         .contentShape(Rectangle())
         .help(tooltip)
         .onHover { hovering in
-            onTip?(hovering ? tooltip : nil)
+            if hovering { hoverTip = tooltip }
+            else if hoverTip == tooltip { hoverTip = nil }
             if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
         }
     }
