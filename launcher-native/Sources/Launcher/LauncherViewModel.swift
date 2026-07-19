@@ -371,15 +371,27 @@ final class LauncherViewModel: ObservableObject {
     private func placeCascade(group: [(String, String, Int32)], in region: NSRect,
                               frontToBack: inout [Int32]) {
         let margin: CGFloat = 8
-        let maxStepX: CGFloat = 48
-        let maxStepY: CGFloat = 64   // clear the ~28px status bar + title bar
-
-        let winW = min(CGFloat(1200), region.width - margin * 2)
-        let winH = min(CGFloat(864), region.height - margin * 2)
+        // Offsets sized so each window behind shows its top-left corner: enough
+        // vertical to clear the ~28px title bar plus the 28px status bar, and
+        // enough horizontal to expose the status dot (~18-26px from the left edge).
+        let stepXTarget: CGFloat = 48
+        let stepYTarget: CGFloat = 60
+        let preferredW: CGFloat = 1200, preferredH: CGFloat = 864
+        let minW: CGFloat = 720, minH: CGFloat = 520
 
         let gaps = CGFloat(max(0, group.count - 1))
-        let stepX = gaps > 0 ? max(0, min(maxStepX, (region.width  - winW - margin * 2) / gaps)) : 0
-        let stepY = gaps > 0 ? max(0, min(maxStepY, (region.height - winH - margin * 2) / gaps)) : 0
+
+        // Size the window from the cascade budget, not the other way round. Fixing
+        // the window at its preferred size left almost no slack in a narrow region
+        // (a 1200px window in a 1280px half has 64px total), collapsing the offsets
+        // and burying every status bar behind the window in front.
+        let winW = max(minW, min(preferredW, region.width  - margin * 2 - stepXTarget * gaps))
+        let winH = max(minH, min(preferredH, region.height - margin * 2 - stepYTarget * gaps))
+
+        // Use the target offsets when they fit; fall back to the remaining slack
+        // when the minimum window size wins out (very crowded stacks).
+        let stepX = gaps > 0 ? min(stepXTarget, max(0, (region.width  - winW - margin * 2) / gaps)) : 0
+        let stepY = gaps > 0 ? min(stepYTarget, max(0, (region.height - winH - margin * 2) / gaps)) : 0
 
         // i == 0: front window at the bottom-left. Increasing i steps up-and-right.
         let startX = region.minX + margin
