@@ -271,7 +271,7 @@ final class LauncherViewModel: ObservableObject {
         // Spread the windows across every screen (left-to-right) rather than piling
         // them onto whichever monitor they happen to sit on, so a crowd of windows
         // splits over both screens. Each screen gets a balanced, contiguous chunk
-        // (earlier screens absorb the remainder), and each chunk cascades within it.
+        // (earlier screens absorb the remainder).
         let screens = NSScreen.screens.sorted {
             $0.frame.minX != $1.frame.minX ? $0.frame.minX < $1.frame.minX
                                            : $0.frame.minY < $1.frame.minY
@@ -281,61 +281,94 @@ final class LauncherViewModel: ObservableObject {
         let per = running.count / screens.count
         let rem = running.count % screens.count
 
-        var firstPid: Int32?
+        // Windows are collected front-to-back as they're placed (each column's
+        // bottom-left/front window first).
+        var frontToBack: [Int32] = []
         var idx = 0
         for (si, screen) in screens.enumerated() {
             let count = per + (si < rem ? 1 : 0)
             guard count > 0 else { continue }
             let group = Array(running[idx ..< idx + count])
             idx += count
-            placeCascade(group: group, on: screen)
-            if firstPid == nil { firstPid = group.first?.2 }
+            layoutScreen(group: group, on: screen, frontToBack: &frontToBack)
         }
 
-        if let pid = firstPid {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                kill(pid, SIGUSR1)
-            }
+        // Each orch window is its own app, so cross-app stacking follows activation
+        // order. Raise back-to-front with a small stagger so the bottom-left window
+        // of each stack ends up in front and the rising staircase of status bars is
+        // revealed. (The SIGUSR2 handler applies the frame and focuses the window.)
+        let raiseOrder = Array(frontToBack.reversed())
+        for (k, pid) in raiseOrder.enumerated() {
+            let delay = Double(k) * 0.04
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { kill(pid, SIGUSR2) }
+        }
+        if let front = frontToBack.first {
+            let settle = Double(raiseOrder.count) * 0.04 + 0.2
+            DispatchQueue.main.asyncAfter(deadline: .now() + settle) { kill(front, SIGUSR1) }
         }
     }
 
-    /// Cascade one group of windows within a single screen. Everything is computed
-    /// in AppKit (NS) coordinates — origin bottom-left, y increasing upward —
-    /// because the orch app positions its window with `setFrameOrigin`, which is
-    /// also NS. `visibleFrame` already excludes the menu bar and Dock. Every window
-    /// is hard-clamped inside the visible area so none can ever land off-screen.
-    private func placeCascade(group: [(String, String, Int32)], on screen: NSScreen) {
+    /// Lay out one screen's chunk of windows. On a screen wide enough for two full
+    /// windows side by side, split the chunk into a left and a right stack so each
+    /// cascade stays short; otherwise use a single stack.
+    private func layoutScreen(group: [(String, String, Int32)], on screen: NSScreen,
+                              frontToBack: inout [Int32]) {
         let margin: CGFloat = 8
-        let maxOffset: CGFloat = 40
+        let winW: CGFloat = 1200
         let vf = screen.visibleFrame
 
-        // Reserve a window box that fits the visible area. Slightly taller than the
-        // real ~832px window so a window that doesn't honor resize still fits.
-        let winW = min(CGFloat(1200), vf.width - margin * 2)
-        let winH = min(CGFloat(864), vf.height - margin * 2)
+        let cols = vf.width >= (winW + margin * 2) * 2 ? 2 : 1
+        let colW = vf.width / CGFloat(cols)
+        let perCol = group.count / cols
+        let remCol = group.count % cols
 
-        // Keep the whole cascade inside the visible area: the last (deepest) window
-        // must still fit, so the per-step offset is bounded by the slack.
+        var gi = 0
+        for c in 0 ..< cols {
+            let cnt = perCol + (c < remCol ? 1 : 0)
+            guard cnt > 0 else { continue }
+            let sub = Array(group[gi ..< gi + cnt])
+            gi += cnt
+            let region = NSRect(x: vf.minX + CGFloat(c) * colW, y: vf.minY,
+                                width: colW, height: vf.height)
+            placeCascade(group: sub, in: region, frontToBack: &frontToBack)
+        }
+    }
+
+    /// Cascade one stack of windows within `region` (AppKit coordinates: origin
+    /// bottom-left, y up). The front window sits at the bottom-left and each
+    /// subsequent window steps up and to the right, so every window's top status
+    /// bar clears the window in front of it. Windows are hard-clamped inside the
+    /// region so none can ever land off-screen.
+    private func placeCascade(group: [(String, String, Int32)], in region: NSRect,
+                              frontToBack: inout [Int32]) {
+        let margin: CGFloat = 8
+        let maxStepX: CGFloat = 48
+        let maxStepY: CGFloat = 64   // clear the ~28px status bar + title bar
+
+        let winW = min(CGFloat(1200), region.width - margin * 2)
+        let winH = min(CGFloat(864), region.height - margin * 2)
+
         let gaps = CGFloat(max(0, group.count - 1))
-        let slack = min(vf.width - winW - margin * 2, vf.height - winH - margin * 2)
-        let step = gaps > 0 ? max(0, min(maxOffset, slack / gaps)) : 0
+        let stepX = gaps > 0 ? max(0, min(maxStepX, (region.width  - winW - margin * 2) / gaps)) : 0
+        let stepY = gaps > 0 ? max(0, min(maxStepY, (region.height - winH - margin * 2) / gaps)) : 0
 
-        // Front window (i == 0) at the top-left; each subsequent window steps down
-        // and to the right.
-        let startX = vf.minX + margin
-        let startY = vf.maxY - winH - margin   // NS origin (bottom-left) of top window
+        // i == 0: front window at the bottom-left. Increasing i steps up-and-right.
+        let startX = region.minX + margin
+        let startY = region.minY + margin   // NS bottom edge of the front window
 
-        for i in stride(from: group.count - 1, through: 0, by: -1) {
+        for i in 0 ..< group.count {
             let (_, path, pid) = group[i]
-            let x = min(max(startX + step * CGFloat(i), vf.minX), vf.maxX - winW)
-            let y = min(max(startY - step * CGFloat(i), vf.minY), vf.maxY - winH)
+            let x = min(max(startX + stepX * CGFloat(i), region.minX), region.maxX - winW)
+            let y = min(max(startY + stepY * CGFloat(i), region.minY), region.maxY - winH)
             let orchDir = (path as NSString).appendingPathComponent(".orch")
             try? FileManager.default.createDirectory(atPath: orchDir, withIntermediateDirectories: true)
-            let cmd: [String: Any] = ["x": Int(x), "y": Int(y), "w": Int(winW), "h": Int(winH), "focus": i == 0]
+            // focus: true for every window — the staggered back-to-front raise in
+            // cascadeWindows() is what establishes the final z-order.
+            let cmd: [String: Any] = ["x": Int(x), "y": Int(y), "w": Int(winW), "h": Int(winH), "focus": true]
             if let data = try? JSONSerialization.data(withJSONObject: cmd) {
                 try? data.write(to: URL(fileURLWithPath: orchDir + "/window-cmd.json"))
             }
-            kill(pid, SIGUSR2)
+            frontToBack.append(pid)   // i == 0 (front) appended first
         }
     }
 
