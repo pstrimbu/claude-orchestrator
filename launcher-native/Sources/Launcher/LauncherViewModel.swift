@@ -268,69 +268,74 @@ final class LauncherViewModel: ObservableObject {
 
         guard !running.isEmpty else { return }
 
-        // Group windows by the screen they're currently on.
-        var screenGroups: [String: [(String, String, Int32, NSScreen)]] = [:]
-        for (name, path, pid) in running {
-            let screen = SystemUtils.getWindowBounds(pid: pid).flatMap { SystemUtils.screenForCGRect($0) }
-                ?? NSScreen.main ?? NSScreen.screens[0]
-            let key = "\(screen.frame.origin.x),\(screen.frame.origin.y)"
-            screenGroups[key, default: []].append((name, path, pid, screen))
+        // Spread the windows across every screen (left-to-right) rather than piling
+        // them onto whichever monitor they happen to sit on, so a crowd of windows
+        // splits over both screens. Each screen gets a balanced, contiguous chunk
+        // (earlier screens absorb the remainder), and each chunk cascades within it.
+        let screens = NSScreen.screens.sorted {
+            $0.frame.minX != $1.frame.minX ? $0.frame.minX < $1.frame.minX
+                                           : $0.frame.minY < $1.frame.minY
         }
+        guard !screens.isEmpty else { return }
+
+        let per = running.count / screens.count
+        let rem = running.count % screens.count
 
         var firstPid: Int32?
-        let margin: CGFloat = 8
-        let maxOffset: CGFloat = 40
-
-        for (_, group) in screenGroups {
-            guard let screen = group.first?.3 else { continue }
-
-            // Everything is computed in AppKit (NS) coordinates — origin bottom-left,
-            // y increasing upward — because the orch app positions its window with
-            // `setFrameOrigin`, which is also NS. (The old code emitted CG top-left
-            // coordinates, so windows destined for a monitor mounted above the
-            // primary got negative y and were flung off the bottom of the main
-            // screen.) `visibleFrame` already excludes the menu bar and Dock.
-            let vf = screen.visibleFrame
-
-            // Reserve a window box that fits the visible area. Slightly taller than
-            // the real ~832px window so a window that doesn't honor resize still fits.
-            let winW = min(CGFloat(1200), vf.width - margin * 2)
-            let winH = min(CGFloat(864), vf.height - margin * 2)
-
-            // Keep the whole cascade inside the visible area: the last (deepest)
-            // window must still fit, so the per-step offset is bounded by the slack.
-            let gaps = CGFloat(max(0, group.count - 1))
-            let slack = min(vf.width - winW - margin * 2, vf.height - winH - margin * 2)
-            let step = gaps > 0 ? max(0, min(maxOffset, slack / gaps)) : 0
-
-            // Front window (i == 0) at the top-left; each subsequent window steps
-            // down and to the right.
-            let startX = vf.minX + margin
-            let startY = vf.maxY - winH - margin   // NS origin (bottom-left) of top window
-
-            for i in stride(from: group.count - 1, through: 0, by: -1) {
-                let (_, path, pid, _) = group[i]
-                // Clamp so a window can never be placed off-screen.
-                let x = min(max(startX + step * CGFloat(i), vf.minX), vf.maxX - winW)
-                let y = min(max(startY - step * CGFloat(i), vf.minY), vf.maxY - winH)
-                let orchDir = (path as NSString).appendingPathComponent(".orch")
-                try? FileManager.default.createDirectory(atPath: orchDir, withIntermediateDirectories: true)
-                let cmd: [String: Any] = ["x": Int(x), "y": Int(y), "w": Int(winW), "h": Int(winH), "focus": i == 0]
-                if let data = try? JSONSerialization.data(withJSONObject: cmd) {
-                    try? data.write(to: URL(fileURLWithPath: orchDir + "/window-cmd.json"))
-                }
-                kill(pid, SIGUSR2)
-            }
-
-            if firstPid == nil {
-                firstPid = group.first?.2
-            }
+        var idx = 0
+        for (si, screen) in screens.enumerated() {
+            let count = per + (si < rem ? 1 : 0)
+            guard count > 0 else { continue }
+            let group = Array(running[idx ..< idx + count])
+            idx += count
+            placeCascade(group: group, on: screen)
+            if firstPid == nil { firstPid = group.first?.2 }
         }
 
         if let pid = firstPid {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 kill(pid, SIGUSR1)
             }
+        }
+    }
+
+    /// Cascade one group of windows within a single screen. Everything is computed
+    /// in AppKit (NS) coordinates — origin bottom-left, y increasing upward —
+    /// because the orch app positions its window with `setFrameOrigin`, which is
+    /// also NS. `visibleFrame` already excludes the menu bar and Dock. Every window
+    /// is hard-clamped inside the visible area so none can ever land off-screen.
+    private func placeCascade(group: [(String, String, Int32)], on screen: NSScreen) {
+        let margin: CGFloat = 8
+        let maxOffset: CGFloat = 40
+        let vf = screen.visibleFrame
+
+        // Reserve a window box that fits the visible area. Slightly taller than the
+        // real ~832px window so a window that doesn't honor resize still fits.
+        let winW = min(CGFloat(1200), vf.width - margin * 2)
+        let winH = min(CGFloat(864), vf.height - margin * 2)
+
+        // Keep the whole cascade inside the visible area: the last (deepest) window
+        // must still fit, so the per-step offset is bounded by the slack.
+        let gaps = CGFloat(max(0, group.count - 1))
+        let slack = min(vf.width - winW - margin * 2, vf.height - winH - margin * 2)
+        let step = gaps > 0 ? max(0, min(maxOffset, slack / gaps)) : 0
+
+        // Front window (i == 0) at the top-left; each subsequent window steps down
+        // and to the right.
+        let startX = vf.minX + margin
+        let startY = vf.maxY - winH - margin   // NS origin (bottom-left) of top window
+
+        for i in stride(from: group.count - 1, through: 0, by: -1) {
+            let (_, path, pid) = group[i]
+            let x = min(max(startX + step * CGFloat(i), vf.minX), vf.maxX - winW)
+            let y = min(max(startY - step * CGFloat(i), vf.minY), vf.maxY - winH)
+            let orchDir = (path as NSString).appendingPathComponent(".orch")
+            try? FileManager.default.createDirectory(atPath: orchDir, withIntermediateDirectories: true)
+            let cmd: [String: Any] = ["x": Int(x), "y": Int(y), "w": Int(winW), "h": Int(winH), "focus": i == 0]
+            if let data = try? JSONSerialization.data(withJSONObject: cmd) {
+                try? data.write(to: URL(fileURLWithPath: orchDir + "/window-cmd.json"))
+            }
+            kill(pid, SIGUSR2)
         }
     }
 
