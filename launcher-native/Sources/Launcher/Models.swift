@@ -14,6 +14,10 @@ struct HiddenPortals: Codable {
     var hidden: [String]
 }
 
+struct PinnedProjects: Codable {
+    var pinned: [String]
+}
+
 struct PortalCsvEntry {
     var name: String
     var uiPort: UInt16
@@ -44,6 +48,7 @@ struct AppStatus: Identifiable, Equatable {
     var uiRunning: Bool
     var apiRunning: Bool
     var pathMissing: Bool = false
+    var pinned: Bool = false
 
     var id: String { sessionPath ?? portalName ?? name }
 }

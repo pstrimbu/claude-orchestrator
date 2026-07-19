@@ -203,6 +203,7 @@ struct ProjectRowView: View {
 
     var body: some View {
         HStack(spacing: 4) {
+            pinButton
             // Status dot + name
             HStack(spacing: 6) {
                 statusDot
@@ -237,6 +238,26 @@ struct ProjectRowView: View {
         )
         .padding(.horizontal, 4)
         .onHover { isHovered = $0 }
+    }
+
+    @ViewBuilder
+    var pinButton: some View {
+        // Pinning applies to orch session entries. Show a filled pin when pinned,
+        // an outline pin on row hover, and otherwise reserve the width so rows
+        // stay aligned.
+        if app.sessionPath != nil, app.pinned || isHovered {
+            Button(action: { viewModel.togglePin(name: app.name) }) {
+                Image(systemName: app.pinned ? "pin.fill" : "pin")
+                    .font(.system(size: 10))
+                    .foregroundColor(app.pinned ? .accent2 : .dim.opacity(0.6))
+                    .frame(width: 16, height: 16)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(app.pinned ? "Unpin \(app.name)" : "Pin \(app.name) (top of list, primary-right on organize)")
+        } else {
+            Spacer().frame(width: 16)
+        }
     }
 
     @ViewBuilder

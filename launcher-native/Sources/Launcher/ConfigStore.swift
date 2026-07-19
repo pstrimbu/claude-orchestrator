@@ -5,6 +5,7 @@ enum ConfigStore {
     static let configDir = homeDir.appendingPathComponent(".config/orch")
     static let projectsFile = configDir.appendingPathComponent("launcher-projects.json")
     static let portalsFile = configDir.appendingPathComponent("launcher-portals.json")
+    static let pinsFile = configDir.appendingPathComponent("launcher-pins.json")
     static let portsCsvPath = homeDir.appendingPathComponent("dev/dev-application-ports.csv")
 
     static func loadProjects() -> [ProjectEntry] {
@@ -39,6 +40,23 @@ enum ConfigStore {
         encoder.outputFormatting = .prettyPrinted
         if let data = try? encoder.encode(config) {
             try? data.write(to: portalsFile)
+        }
+    }
+
+    static func loadPinned() -> Set<String> {
+        guard let data = try? Data(contentsOf: pinsFile),
+              let config = try? JSONDecoder().decode(PinnedProjects.self, from: data) else {
+            return []
+        }
+        return Set(config.pinned)
+    }
+
+    static func savePinned(_ names: Set<String>) {
+        try? FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        if let data = try? encoder.encode(PinnedProjects(pinned: Array(names).sorted())) {
+            try? data.write(to: pinsFile)
         }
     }
 

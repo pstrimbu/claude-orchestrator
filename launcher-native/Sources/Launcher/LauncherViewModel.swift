@@ -5,6 +5,7 @@ import AppKit
 final class LauncherViewModel: ObservableObject {
     @Published var apps: [AppStatus] = []
     @Published var projects: [ProjectEntry] = []
+    @Published var pinned: Set<String> = ConfigStore.loadPinned()
     @Published var isExpanded = false
     @Published var showingPortalPicker = false
     @Published var showingProjectPicker = false
@@ -107,14 +108,23 @@ final class LauncherViewModel: ObservableObject {
     func refreshStatuses() {
         let snapshot = projects
         let removed = removedNames
+        let pins = pinned
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let statuses = Self.buildAppStatuses(projects: snapshot)
+            let statuses = Self.buildAppStatuses(projects: snapshot, pinned: pins)
                 .filter { !removed.contains($0.name) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.apps = statuses
             }
         }
+    }
+
+    /// Pin/unpin a project. Pinned entries sort to the top of the list and are
+    /// grouped onto the primary display's right half when organizing windows.
+    func togglePin(name: String) {
+        if pinned.contains(name) { pinned.remove(name) } else { pinned.insert(name) }
+        ConfigStore.savePinned(pinned)
+        refreshStatuses()
     }
 
     // MARK: - Project Actions
@@ -268,29 +278,64 @@ final class LauncherViewModel: ObservableObject {
 
         guard !running.isEmpty else { return }
 
-        // Spread the windows across every screen (left-to-right) rather than piling
-        // them onto whichever monitor they happen to sit on, so a crowd of windows
-        // splits over both screens. Each screen gets a balanced, contiguous chunk
-        // (earlier screens absorb the remainder).
-        let screens = NSScreen.screens.sorted {
-            $0.frame.minX != $1.frame.minX ? $0.frame.minX < $1.frame.minX
-                                           : $0.frame.minY < $1.frame.minY
+        let pins = pinned
+        let pinnedWins = running.filter { pins.contains($0.0) }
+        let otherWins = running.filter { !pins.contains($0.0) }
+
+        // Identify the primary (menu-bar) display and, if present, a secondary.
+        let screens = NSScreen.screens
+        let primary = screens.first(where: { $0.frame.origin == .zero })
+            ?? NSScreen.main ?? screens.first
+        guard let primary = primary else { return }
+        let secondary = screens
+            .filter { $0 != primary }
+            .sorted { $0.frame.minX < $1.frame.minX }
+            .first
+
+        // Half-screen regions (AppKit coords, origin bottom-left).
+        func leftHalf(_ s: NSScreen) -> NSRect {
+            let v = s.visibleFrame
+            return NSRect(x: v.minX, y: v.minY, width: v.width / 2, height: v.height)
         }
-        guard !screens.isEmpty else { return }
+        func rightHalf(_ s: NSScreen) -> NSRect {
+            let v = s.visibleFrame
+            return NSRect(x: v.midX, y: v.minY, width: v.width / 2, height: v.height)
+        }
 
-        let per = running.count / screens.count
-        let rem = running.count % screens.count
-
-        // Windows are collected front-to-back as they're placed (each column's
-        // bottom-left/front window first).
+        // Placement policy:
+        //  - Pinned windows share one stack on the primary display's RIGHT half
+        //    (the left half of the primary is reserved for a browser).
+        //  - Everything else fills, in order: secondary-left, secondary-right, then
+        //    the primary's left half only as overflow.
         var frontToBack: [Int32] = []
-        var idx = 0
-        for (si, screen) in screens.enumerated() {
-            let count = per + (si < rem ? 1 : 0)
-            guard count > 0 else { continue }
-            let group = Array(running[idx ..< idx + count])
-            idx += count
-            layoutScreen(group: group, on: screen, frontToBack: &frontToBack)
+
+        if !pinnedWins.isEmpty {
+            placeCascade(group: pinnedWins, in: rightHalf(primary), frontToBack: &frontToBack)
+        }
+
+        if !otherWins.isEmpty {
+            var zones: [NSRect]
+            if let sec = secondary {
+                zones = [leftHalf(sec), rightHalf(sec)]
+                // Spill onto the primary's (reserved) left half only when the two
+                // secondary halves would be overcrowded.
+                let softCap = 6
+                if otherWins.count > zones.count * softCap { zones.append(leftHalf(primary)) }
+            } else {
+                zones = [leftHalf(primary)]
+            }
+
+            // Distribute the others evenly across the chosen zones (balanced,
+            // contiguous chunks; earlier zones absorb the remainder).
+            let per = otherWins.count / zones.count
+            let rem = otherWins.count % zones.count
+            var idx = 0
+            for (zi, zone) in zones.enumerated() {
+                let cnt = per + (zi < rem ? 1 : 0)
+                guard cnt > 0 else { continue }
+                placeCascade(group: Array(otherWins[idx ..< idx + cnt]), in: zone, frontToBack: &frontToBack)
+                idx += cnt
+            }
         }
 
         // Each orch window is its own app, so cross-app stacking follows activation
@@ -305,32 +350,6 @@ final class LauncherViewModel: ObservableObject {
         if let front = frontToBack.first {
             let settle = Double(raiseOrder.count) * 0.04 + 0.2
             DispatchQueue.main.asyncAfter(deadline: .now() + settle) { kill(front, SIGUSR1) }
-        }
-    }
-
-    /// Lay out one screen's chunk of windows. On a screen wide enough for two full
-    /// windows side by side, split the chunk into a left and a right stack so each
-    /// cascade stays short; otherwise use a single stack.
-    private func layoutScreen(group: [(String, String, Int32)], on screen: NSScreen,
-                              frontToBack: inout [Int32]) {
-        let margin: CGFloat = 8
-        let winW: CGFloat = 1200
-        let vf = screen.visibleFrame
-
-        let cols = vf.width >= (winW + margin * 2) * 2 ? 2 : 1
-        let colW = vf.width / CGFloat(cols)
-        let perCol = group.count / cols
-        let remCol = group.count % cols
-
-        var gi = 0
-        for c in 0 ..< cols {
-            let cnt = perCol + (c < remCol ? 1 : 0)
-            guard cnt > 0 else { continue }
-            let sub = Array(group[gi ..< gi + cnt])
-            gi += cnt
-            let region = NSRect(x: vf.minX + CGFloat(c) * colW, y: vf.minY,
-                                width: colW, height: vf.height)
-            placeCascade(group: sub, in: region, frontToBack: &frontToBack)
         }
     }
 
@@ -374,7 +393,7 @@ final class LauncherViewModel: ObservableObject {
 
     // MARK: - Status Building
 
-    static func buildAppStatuses(projects: [ProjectEntry]) -> [AppStatus] {
+    static func buildAppStatuses(projects: [ProjectEntry], pinned: Set<String> = []) -> [AppStatus] {
         let listening = SystemUtils.getListeningPorts()
         let csvPortals = ConfigStore.loadPortsCsv()
         let portalCfg = ConfigStore.loadHiddenPortals()
@@ -433,7 +452,8 @@ final class LauncherViewModel: ObservableObject {
                 portalStartCmd: portal?.startCmd,
                 uiRunning: portal?.uiRunning ?? false,
                 apiRunning: portal?.apiRunning ?? false,
-                pathMissing: !SystemUtils.directoryExists(proj.path)
+                pathMissing: !SystemUtils.directoryExists(proj.path),
+                pinned: pinned.contains(proj.name)
             ))
         }
 
@@ -452,12 +472,17 @@ final class LauncherViewModel: ObservableObject {
                     portalStartCmd: p.startCmd,
                     uiRunning: p.uiRunning,
                     apiRunning: p.apiRunning,
-                    pathMissing: !SystemUtils.directoryExists(p.path)
+                    pathMissing: !SystemUtils.directoryExists(p.path),
+                    pinned: pinned.contains(p.name)
                 ))
             }
         }
 
-        apps.sort { $0.name.lowercased() < $1.name.lowercased() }
+        // Pinned entries float to the top; alphabetical within each group.
+        apps.sort { a, b in
+            if a.pinned != b.pinned { return a.pinned }
+            return a.name.lowercased() < b.name.lowercased()
+        }
         return apps
     }
 
