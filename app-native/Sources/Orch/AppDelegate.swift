@@ -943,7 +943,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         try? FileManager.default.removeItem(atPath: cmdPath)
 
         if let x = cmd["x"] as? Int, let y = cmd["y"] as? Int {
-            window.setFrameOrigin(NSPoint(x: x, y: y))
+            // Coordinates are AppKit (NS) — origin bottom-left. If the launcher
+            // also sent a size (organize/cascade), set frame + size in one call so
+            // the window is guaranteed to fit its screen; otherwise just move it.
+            if let w = cmd["w"] as? Int, let h = cmd["h"] as? Int {
+                window.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
+            } else {
+                window.setFrameOrigin(NSPoint(x: x, y: y))
+            }
         }
         if cmd["focus"] as? Bool == true {
             window.makeKeyAndOrderFront(nil)

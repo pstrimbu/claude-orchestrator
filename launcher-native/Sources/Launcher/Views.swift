@@ -90,32 +90,39 @@ struct ExpandedView: View {
     @ObservedObject var viewModel: LauncherViewModel
     var onAddProject: () -> Void
 
+    // The `.help()` tooltip never shows on this non-activating panel (NSToolTipManager
+    // needs an active app), so surface the hovered button's description inline here.
+    @State private var hoverTip: String? = nil
+
     var body: some View {
         VStack(spacing: 0) {
             // Titlebar
             HStack {
-                Text("orch")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.dim)
+                Text(hoverTip ?? "orch")
+                    .font(.system(size: 13, weight: hoverTip == nil ? .semibold : .regular))
+                    .foregroundColor(hoverTip == nil ? .dim : .fg)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .animation(.easeOut(duration: 0.1), value: hoverTip)
                 Spacer()
                 HStack(spacing: 4) {
-                    TitlebarButton(icon: "\u{21B6}", tooltip: "Undo", enabled: viewModel.canUndo) {
+                    TitlebarButton(icon: "\u{21B6}", tooltip: "Undo", enabled: viewModel.canUndo, onTip: { hoverTip = $0 }) {
                         viewModel.undo()
                     }
-                    TitlebarButton(icon: "\u{21B7}", tooltip: "Redo", enabled: viewModel.canRedo) {
+                    TitlebarButton(icon: "\u{21B7}", tooltip: "Redo", enabled: viewModel.canRedo, onTip: { hoverTip = $0 }) {
                         viewModel.redo()
                     }
-                    TitlebarButton(icon: "\u{25AE}", tooltip: "Cascade windows") {
+                    TitlebarButton(icon: "\u{25AE}", tooltip: "Organize windows", onTip: { hoverTip = $0 }) {
                         viewModel.cascadeWindows()
                     }
-                    TitlebarButton(icon: "\u{2699}", tooltip: "Show hidden portal") {
+                    TitlebarButton(icon: "\u{2699}", tooltip: "Show hidden portal", onTip: { hoverTip = $0 }) {
                         viewModel.showingProjectPicker = false
                         viewModel.showingPortalPicker = true
                     }
-                    TitlebarButton(icon: "\u{21BB}", tooltip: "Reload config") {
+                    TitlebarButton(icon: "\u{21BB}", tooltip: "Reload config", onTip: { hoverTip = $0 }) {
                         viewModel.reloadProjects()
                     }
-                    TitlebarButton(icon: "+", tooltip: "Add project") {
+                    TitlebarButton(icon: "+", tooltip: "Add project", onTip: { hoverTip = $0 }) {
                         viewModel.showingPortalPicker = false
                         viewModel.showingProjectPicker.toggle()
                     }
@@ -157,6 +164,9 @@ struct TitlebarButton: View {
     let icon: String
     let tooltip: String
     var enabled: Bool = true
+    /// Reports the tooltip text on hover (nil when the cursor leaves), so the
+    /// parent can render it inline — see ExpandedView.hoverTip.
+    var onTip: ((String?) -> Void)? = nil
     let action: () -> Void
 
     var body: some View {
@@ -174,6 +184,10 @@ struct TitlebarButton: View {
         )
         .contentShape(Rectangle())
         .help(tooltip)
+        .onHover { hovering in
+            onTip?(hovering ? tooltip : nil)
+            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
     }
 }
 
