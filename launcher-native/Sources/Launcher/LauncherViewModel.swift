@@ -124,7 +124,16 @@ final class LauncherViewModel: ObservableObject {
     func togglePin(name: String) {
         if pinned.contains(name) { pinned.remove(name) } else { pinned.insert(name) }
         ConfigStore.savePinned(pinned)
-        refreshStatuses()
+        // Reorder the visible list in place — instant. A full refreshStatuses()
+        // re-runs lsof + a ps per project and takes several seconds; the periodic
+        // poll will reconcile the rest. Only the pinned flag and order change here.
+        let pins = pinned
+        apps = apps
+            .map { a in var a = a; a.pinned = pins.contains(a.name); return a }
+            .sorted { a, b in
+                if a.pinned != b.pinned { return a.pinned }
+                return a.name.lowercased() < b.name.lowercased()
+            }
     }
 
     // MARK: - Project Actions
