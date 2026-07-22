@@ -109,7 +109,8 @@ class Config {
 
     /// Play a sound when Claude finishes and the session is waiting on you
     /// (the same transition that starts the amber attention blink).
-    var soundOnCompletion: Bool { loadProjectJson().sound_on_completion ?? false }
+    /// Defaults ON; the project menu's [S] toggle opts a project out.
+    var soundOnCompletion: Bool { loadProjectJson().sound_on_completion ?? true }
 
     func setSoundOnCompletion(_ on: Bool) {
         var updates = ProjectJson()
