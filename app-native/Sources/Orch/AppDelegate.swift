@@ -43,6 +43,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     // Attention state: Claude emitted output responding to the user, then went
     // quiet — it's the user's turn. Cleared when they type or output resumes.
     private var sawOutputSinceInput = false
+    private var lastAttention = false   // edge-detect for the completion chime
     private var lastUserInputTime: Date = .distantPast
     // Burn-rate sampling: (cumulative tokens, timestamp) of the previous sample.
     private var lastCostSample: (cost: Double, time: Date)?
@@ -801,6 +802,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         // "Your turn": Claude produced output responding to you and has been
         // quiet for a few seconds. Cleared once you type or output resumes.
         let attention = sawOutputSinceInput && !active && idle >= 3
+        // Chime once when the session transitions into "your turn" (opt-in via
+        // the project menu's Completion Sound toggle).
+        if attention && !lastAttention && config.soundOnCompletion {
+            NSSound(named: "Glass")?.play()
+        }
+        lastAttention = attention
         statusBarModel.data = StatusBarData(
             claudeActive: active,
             projectName: config.projectName,

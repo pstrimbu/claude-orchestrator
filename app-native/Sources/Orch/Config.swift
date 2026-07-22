@@ -38,6 +38,7 @@ struct ProjectJson: Codable {
     var tracker: TrackerConfig?
     var linear: LinearConfig?
     var jira: JiraConfig?
+    var sound_on_completion: Bool?
 }
 
 class Config {
@@ -79,6 +80,7 @@ class Config {
         if let t = updates.tracker { existing.tracker = t }
         if let l = updates.linear { existing.linear = l }
         if let j = updates.jira { existing.jira = j }
+        if let s = updates.sound_on_completion { existing.sound_on_completion = s }
 
         try? FileManager.default.createDirectory(atPath: orchDir, withIntermediateDirectories: true)
         let configPath = orchDir + "/project.json"
@@ -104,6 +106,16 @@ class Config {
 
     var linearConfig: LinearConfig? { loadProjectJson().linear }
     var jiraConfig: JiraConfig? { loadProjectJson().jira }
+
+    /// Play a sound when Claude finishes and the session is waiting on you
+    /// (the same transition that starts the amber attention blink).
+    var soundOnCompletion: Bool { loadProjectJson().sound_on_completion ?? false }
+
+    func setSoundOnCompletion(_ on: Bool) {
+        var updates = ProjectJson()
+        updates.sound_on_completion = on
+        save(updates: updates)
+    }
 
     var trackerTitlePrefix: String {
         loadProjectJson().tracker?.title_prefix ?? "[AI]"
