@@ -802,11 +802,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         // "Your turn": Claude produced output responding to you and has been
         // quiet for a few seconds. Cleared once you type or output resumes.
         let attention = sawOutputSinceInput && !active && idle >= 3
-        // Chime once when the session transitions into "your turn" (opt-in via
-        // the project menu's Completion Sound toggle).
-        if attention && !lastAttention && config.soundOnCompletion {
-            NSSound(named: "Glass")?.play()
-        }
+        // Chime on the transition into "your turn". Only fire on the false->true
+        // edge (not every 1s tick while idle), and gate through a shared throttle
+        // so at most one ding sounds across ALL orch sessions per interval — one
+        // ding is enough to make you look; you'll find the rest by eye.
+        if attention && !lastAttention { tryCompletionChime() }
         lastAttention = attention
         statusBarModel.data = StatusBarData(
             claudeActive: active,
@@ -837,6 +837,44 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             prChecks: statusBarState.prChecks,
             attention: attention
         )
+    }
+
+    /// Play the completion chime, subject to the per-project opt-out and a shared
+    /// cross-session throttle. The file work runs off the main thread; the sound
+    /// plays on main.
+    private func tryCompletionChime() {
+        guard config.soundOnCompletion else { return }
+        DispatchQueue.global(qos: .utility).async {
+            guard Self.claimGlobalChimeSlot(minInterval: 10) else { return }
+            DispatchQueue.main.async { NSSound(named: "Glass")?.play() }
+        }
+    }
+
+    /// Returns true at most once per `minInterval` seconds across every running
+    /// orch process. Uses an flock'd lock file plus a timestamp file in the shared
+    /// ~/.config/orch dir so concurrent sessions can't all ding at once.
+    private static func claimGlobalChimeSlot(minInterval: TimeInterval) -> Bool {
+        let dir = NSHomeDirectory() + "/.config/orch"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let lockPath = dir + "/chime.lock"
+        let stampPath = dir + "/chime.stamp"
+
+        let fd = open(lockPath, O_CREAT | O_RDWR, 0o644)
+        // If we can't lock, fall back to allowing the ding rather than going silent.
+        guard fd >= 0 else { return true }
+        defer { close(fd) }
+        guard flock(fd, LOCK_EX) == 0 else { return true }
+        defer { flock(fd, LOCK_UN) }
+
+        let now = Date().timeIntervalSince1970
+        var last = 0.0
+        if let s = try? String(contentsOfFile: stampPath, encoding: .utf8),
+           let v = Double(s.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            last = v
+        }
+        guard now - last >= minInterval else { return false }
+        try? String(format: "%.3f", now).write(toFile: stampPath, atomically: true, encoding: .utf8)
+        return true
     }
 
     // MARK: - Sections
