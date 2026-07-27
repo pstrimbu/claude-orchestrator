@@ -42,9 +42,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
 
     // Attention state: Claude emitted output responding to the user, then went
     // quiet — it's the user's turn. Cleared when they type or output resumes.
-    private var sawOutputSinceInput = false
-    private var lastAttention = false   // edge-detect for the completion title flash
-    private var lastTitleFlash = Date.distantPast
+    private var awaitingResponse = false   // armed on submit, cleared when the user types
+    private var responseBytes = 0          // output bytes accumulated since submit
+    private var flashedThisResponse = false
     private var titleFlashUntil: Date?
     private var lastUserInputTime: Date = .distantPast
     // Burn-rate sampling: (cumulative tokens, timestamp) of the previous sample.
@@ -318,8 +318,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             return
         }
 
-        // Any keystroke means the user is engaged — clear the "your turn" state.
-        sawOutputSinceInput = false
+        // Any keystroke means the user is engaged — disarm "your turn" detection.
+        // A submitted (non-empty) command re-arms it below.
+        awaitingResponse = false
         lastUserInputTime = Date()
 
         // Track user input to capture last command
@@ -329,6 +330,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
                 if !cmd.isEmpty {
                     lastCommand = cmd
                     history.append(cmd, session: resolveSessionId())
+                    // Arm completion detection: watch this command's response for
+                    // the moment its output goes quiet.
+                    awaitingResponse = true
+                    responseBytes = 0
+                    flashedThisResponse = false
                     sendStatusUpdate()
                     // No /compact nudge needed: Claude re-runs the statusLine
                     // command once compaction finishes, so the next poll tick
@@ -546,7 +552,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         if !bytes.isEmpty {
             appendScrollback(bytes)
             lastPtyOutputTime = Date()
-            sawOutputSinceInput = true
+            if awaitingResponse { responseBytes += bytes.count }
 
             // Save absolute viewport row before feed so we can restore it if
             // the user is reading scrollback. SwiftTerm otherwise snaps yDisp
@@ -800,25 +806,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     private func sendStatusUpdate() {
         let idle = Date().timeIntervalSince(lastPtyOutputTime)
         let active = idle < 2
-        // "Your turn": Claude produced output responding to you and has been
-        // quiet for a few seconds. Cleared once you type or output resumes.
-        let attention = sawOutputSinceInput && !active && idle >= 3
 
-        // Flash the window title once when the session transitions into "your
-        // turn" — a quiet, per-window cue (visible on the cascade's title bars)
-        // instead of a sound. Edge-triggered, with a cooldown so a flickering
-        // attention state can't re-flash.
-        if attention && !lastAttention && config.notifyOnCompletion {
-            let now = Date()
-            if now.timeIntervalSince(lastTitleFlash) > 8 {
-                lastTitleFlash = now
-                titleFlashUntil = now.addingTimeInterval(1.4)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                    self?.sendStatusUpdate()   // revert the title promptly
-                }
+        // "Your turn": a submitted command produced a substantive response that
+        // has now gone quiet. Requiring the armed (post-submit) state plus a
+        // minimum volume of output filters out keystroke echo and incidental
+        // terminal redraws that used to trip spurious flashes; the longer quiet
+        // window avoids firing during Claude's mid-response tool pauses.
+        let quietThreshold = 4.0
+        let minResponseBytes = 24
+        let attention = awaitingResponse && responseBytes >= minResponseBytes && idle >= quietThreshold
+
+        // Flash the window title exactly once per submitted command, when its
+        // response goes quiet — a silent, per-window cue on the title bar.
+        if attention && !flashedThisResponse && config.notifyOnCompletion {
+            flashedThisResponse = true
+            titleFlashUntil = Date().addingTimeInterval(1.4)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                self?.sendStatusUpdate()   // revert the title promptly
             }
         }
-        lastAttention = attention
 
         let baseTitle = "orch \u{2014} \(config.projectName)"
         if let until = titleFlashUntil, Date() < until {
