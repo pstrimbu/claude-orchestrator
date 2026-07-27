@@ -1,5 +1,4 @@
 import Foundation
-import AppKit
 
 func showProjectOverlay(
     overlay: OverlayManager,
@@ -43,13 +42,12 @@ func showProjectOverlay(
     }))
 
     items.append(OverlayItem(
-        label: "[S] Completion Sound: \(config.soundOnCompletion ? "On" : "Off")",
+        label: "[S] Completion Title Flash: \(config.notifyOnCompletion ? "On" : "Off")",
         shortcut: "s",
         action: {
-            let on = !config.soundOnCompletion
-            config.setSoundOnCompletion(on)
-            if on { NSSound(named: "Glass")?.play() }   // preview the sound
-            overlay.showMessage("Completion sound \(on ? "on" : "off")")
+            let on = !config.notifyOnCompletion
+            config.setNotifyOnCompletion(on)
+            overlay.showMessage("Completion title flash \(on ? "on" : "off")")
             onUpdate()
         }
     ))
@@ -59,7 +57,7 @@ func showProjectOverlay(
         items: items,
         onClose: onUpdate,
         width: 65,
-        footer: "[W] Wizard  [E] Editor  [F] Finder  [S] Sound",
+        footer: "[W] Wizard  [E] Editor  [F] Finder  [S] Flash",
         anchor: "status-project"
     ))
 }

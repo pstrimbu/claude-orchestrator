@@ -38,7 +38,8 @@ struct ProjectJson: Codable {
     var tracker: TrackerConfig?
     var linear: LinearConfig?
     var jira: JiraConfig?
-    var sound_on_completion: Bool?
+    var notify_on_completion: Bool?
+    var sound_on_completion: Bool?   // legacy — read for back-compat, no longer written
 }
 
 class Config {
@@ -80,7 +81,7 @@ class Config {
         if let t = updates.tracker { existing.tracker = t }
         if let l = updates.linear { existing.linear = l }
         if let j = updates.jira { existing.jira = j }
-        if let s = updates.sound_on_completion { existing.sound_on_completion = s }
+        if let n = updates.notify_on_completion { existing.notify_on_completion = n }
 
         try? FileManager.default.createDirectory(atPath: orchDir, withIntermediateDirectories: true)
         let configPath = orchDir + "/project.json"
@@ -107,14 +108,18 @@ class Config {
     var linearConfig: LinearConfig? { loadProjectJson().linear }
     var jiraConfig: JiraConfig? { loadProjectJson().jira }
 
-    /// Play a sound when Claude finishes and the session is waiting on you
-    /// (the same transition that starts the amber attention blink).
-    /// Defaults ON; the project menu's [S] toggle opts a project out.
-    var soundOnCompletion: Bool { loadProjectJson().sound_on_completion ?? true }
+    /// Flash the window title once when Claude finishes and the session is waiting
+    /// on you (the same transition that starts the amber attention blink).
+    /// Defaults ON; the project menu's [S] toggle opts a project out. Falls back to
+    /// the legacy `sound_on_completion` key so earlier opt-outs still apply.
+    var notifyOnCompletion: Bool {
+        let cfg = loadProjectJson()
+        return cfg.notify_on_completion ?? cfg.sound_on_completion ?? true
+    }
 
-    func setSoundOnCompletion(_ on: Bool) {
+    func setNotifyOnCompletion(_ on: Bool) {
         var updates = ProjectJson()
-        updates.sound_on_completion = on
+        updates.notify_on_completion = on
         save(updates: updates)
     }
 
