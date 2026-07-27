@@ -181,6 +181,13 @@ class ClaudeSession {
                 self.running = false
                 close(masterFdVar)
 
+                // If --resume failed (e.g. the id no longer resolves), fall back to
+                // --continue rather than stranding the window.
+                if exitCode != 0, case .resume = self.mode {
+                    self.mode = .continue_
+                    self.spawn()
+                    return
+                }
                 // If --continue failed, retry as new session
                 if exitCode != 0, case .continue_ = self.mode {
                     self.mode = .new

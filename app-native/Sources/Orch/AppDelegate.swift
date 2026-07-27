@@ -452,10 +452,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             return
         }
 
+        // Resume the exact current session id so the relaunched window knows its
+        // id immediately (no post-continue discovery race) and its command history
+        // reloads at once. Resolve before killing — kill clears the child pid that
+        // discovery relies on. Fall back to --continue if the id isn't known.
+        let sid = resolveSessionId()
         session?.kill()
+        let resumeArgs = sid.map { "--resume \($0)" } ?? "--continue"
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-        proc.arguments = ["-c", "\"\(orch)\" \"\(projectPath)\" --continue"]
+        proc.arguments = ["-c", "\"\(orch)\" \"\(projectPath)\" \(resumeArgs)"]
         proc.currentDirectoryURL = URL(fileURLWithPath: projectPath)
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
@@ -470,11 +476,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     }
 
     private func handleCtrlR() {
-        // Restart session with --continue
+        // Restart in place, resuming the exact current session id so the reloaded
+        // window keeps its id (and command history). Resolve before kill clears the
+        // child pid; fall back to --continue when the id isn't known yet.
         saveScrollback()
+        let sid = resolveSessionId()
         session?.kill()
+        let mode: SessionMode = sid.map { .resume(id: $0) } ?? .continue_
         let terminal = terminalView.getTerminal()
-        session = ClaudeSession(projectPath: projectPath, cols: terminal.cols, rows: terminal.rows, mode: .continue_,
+        session = ClaudeSession(projectPath: projectPath, cols: terminal.cols, rows: terminal.rows, mode: mode,
                                 remoteControl: remoteControlEnabled, remoteName: config.projectName)
         session.onData = { [weak self] data in
             self?.handleSessionData(data)
