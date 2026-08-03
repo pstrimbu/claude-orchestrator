@@ -74,3 +74,10 @@ Claude Code sessions. It's shaped to exactly how I work; expect rough edges and
 opinionated defaults. Anthropic's Claude Code desktop app now covers some of this
 ground natively — this exists for the parts it doesn't, and for the workflow glue
 (time tracking, issue trackers, per-project state) that a general tool shouldn't have.
+
+## License
+
+[PolyForm Noncommercial License 1.0.0](LICENSE) — free to use, modify, and share
+for any **noncommercial** purpose. **Commercial use** (selling it, hosting it as a
+paid service, or bundling it into a paid product) requires a separate commercial
+license. For commercial licensing, contact Peter Strimbu <peter@strimbu.com>.
