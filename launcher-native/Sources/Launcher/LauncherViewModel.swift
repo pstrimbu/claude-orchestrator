@@ -11,6 +11,11 @@ final class LauncherViewModel: ObservableObject {
     @Published var showingProjectPicker = false
     @Published var pendingPortals: Set<String> = []  // portal names currently starting/stopping
     @Published var canUndo = false
+    // Disk cleanup. `cleanupReport` non-nil drives the sheet; `cleanupBusy`
+    // blocks a second sweep while one is walking the tree.
+    @Published var cleanupReport: String? = nil
+    @Published var cleanupBusy = false
+    @Published var cleanupApplied = false
     @Published var canRedo = false
     private var removedNames: Set<String> = []  // recently removed — suppress from poll results
 
@@ -586,4 +591,49 @@ final class LauncherViewModel: ObservableObject {
         let chrome: CGFloat = isExpanded ? 50 : 16
         return min(800, max(60, chrome + CGFloat(apps.count) * itemHeight))
     }
+
+    // MARK: - Disk cleanup
+
+    /// Dry run: what tier-1 scratch could be reclaimed across every project.
+    ///
+    /// Tier 1 only. The launcher deliberately does not expose tiers 2 and 3 —
+    /// those delete build output and dependency trees, which cost a rebuild or a
+    /// reinstall and want a human reading the held-back list first. A one-click
+    /// button should never be able to cost someone an afternoon; the CLI is
+    /// there for the rest.
+    func scanCleanup() {
+        guard !cleanupBusy else { return }
+        cleanupBusy = true
+        cleanupApplied = false
+        let exe = SystemUtils.orchCleanExecutable()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let (_, out) = SystemUtils.runCapturing(exe, ["--tier", "1"])
+            DispatchQueue.main.async {
+                self.cleanupBusy = false
+                self.cleanupReport = out.isEmpty ? "orch-clean produced no output." : out
+            }
+        }
+    }
+
+    /// Delete what the scan listed. Only reachable from the sheet, so the list
+    /// has been on screen before anything is removed.
+    func applyCleanup() {
+        guard !cleanupBusy else { return }
+        cleanupBusy = true
+        let exe = SystemUtils.orchCleanExecutable()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let (_, out) = SystemUtils.runCapturing(exe, ["--tier", "1", "--apply"])
+            DispatchQueue.main.async {
+                self.cleanupBusy = false
+                self.cleanupApplied = true
+                self.cleanupReport = out.isEmpty ? "orch-clean produced no output." : out
+            }
+        }
+    }
+
+    func dismissCleanup() {
+        cleanupReport = nil
+        cleanupApplied = false
+    }
+
 }

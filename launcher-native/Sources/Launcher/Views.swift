@@ -122,6 +122,10 @@ struct ExpandedView: View {
                     TitlebarButton(icon: "\u{21BB}", tooltip: "Reload config", hoverTip: $hoverTip) {
                         viewModel.reloadProjects()
                     }
+                    TitlebarButton(icon: "\u{2298}", tooltip: "Reclaim disk",
+                                   enabled: !viewModel.cleanupBusy, hoverTip: $hoverTip) {
+                        viewModel.scanCleanup()
+                    }
                     TitlebarButton(icon: "+", tooltip: "Add project", hoverTip: $hoverTip) {
                         viewModel.showingPortalPicker = false
                         viewModel.showingProjectPicker.toggle()
@@ -130,6 +134,12 @@ struct ExpandedView: View {
             }
             .padding(.horizontal, 12)
             .frame(height: 36)
+            .sheet(isPresented: Binding(
+                get: { viewModel.cleanupReport != nil },
+                set: { if !$0 { viewModel.dismissCleanup() } }
+            )) {
+                CleanupSheet(viewModel: viewModel)
+            }
             .background(Color.bg)
             .overlay(alignment: .bottom) {
                 Rectangle().fill(Color.sep).frame(height: 1)
@@ -558,5 +568,59 @@ struct ProjectPickerView: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+// MARK: - Disk cleanup
+
+/// The reclaim-disk sheet: the report `orch-clean` printed, then the choice.
+///
+/// It shows the tool's own stdout rather than a re-formatted summary. The report
+/// already lists every path and the reason anything was held back, and a second
+/// rendering of the same facts is a second thing that can disagree with the
+/// first — the number on screen should be the number the tool computed.
+struct CleanupSheet: View {
+    @ObservedObject var viewModel: LauncherViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(viewModel.cleanupApplied ? "Reclaimed" : "Reclaimable scratch")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.fg)
+
+            ScrollView {
+                Text(viewModel.cleanupReport ?? "")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.fg)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .frame(width: 620, height: 320)
+
+            if !viewModel.cleanupApplied {
+                Text("Build caches and dev-server scratch only. Rebuilt automatically; "
+                     + "no source, dependencies or build output are touched.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.dim)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: 620, alignment: .leading)
+            }
+
+            HStack {
+                Spacer()
+                ActionButton(label: viewModel.cleanupApplied ? "Done" : "Cancel", style: .focus) {
+                    viewModel.dismissCleanup()
+                }
+                if !viewModel.cleanupApplied {
+                    ActionButton(label: viewModel.cleanupBusy ? "Deleting\u{2026}" : "Delete",
+                                 style: .stop) {
+                        viewModel.applyCleanup()
+                    }
+                }
+            }
+            .frame(width: 620)
+        }
+        .padding(16)
+        .background(Color.bg)
     }
 }

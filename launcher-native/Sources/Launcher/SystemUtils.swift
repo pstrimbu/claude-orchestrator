@@ -164,6 +164,44 @@ enum SystemUtils {
         return "orch"  // fall back to $PATH lookup
     }
 
+    /// Resolve the absolute path to the `orch-clean` CLI — sibling of `orch`.
+    ///
+    /// Same reasoning as `orchExecutable()`: $PATH is stripped to a minimal
+    /// default when the launcher runs as a Dock `.app`, so the sibling path is
+    /// resolved explicitly rather than looked up.
+    static func orchCleanExecutable() -> String {
+        if let execPath = Bundle.main.executablePath {
+            let execDir = (execPath as NSString).deletingLastPathComponent
+            let candidate = (execDir as NSString)
+                .appendingPathComponent("../bin/orch-clean")
+            let resolved = (candidate as NSString).standardizingPath
+            if FileManager.default.isExecutableFile(atPath: resolved) {
+                return resolved
+            }
+        }
+        return "orch-clean"
+    }
+
+    /// Run a command to completion and return (exitCode, stdout+stderr).
+    ///
+    /// Blocking on purpose: callers push this onto a background queue. A cleanup
+    /// sweep walks every project with `du`, which takes seconds — long enough
+    /// that running it on the main thread would freeze the panel.
+    static func runCapturing(_ executable: String, _ args: [String]) -> (Int32, String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = args
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do { try process.run() } catch { return (-1, "could not run \(executable): \(error)") }
+        // Drain BEFORE waiting: a sweep across 80 projects overflows the 64KB
+        // pipe buffer, and a full buffer deadlocks the child mid-write.
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+    }
+
     /// True if `path` exists and is a directory.
     static func directoryExists(_ path: String) -> Bool {
         var isDir: ObjCBool = false
