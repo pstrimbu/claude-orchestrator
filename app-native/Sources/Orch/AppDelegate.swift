@@ -456,7 +456,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         // id immediately (no post-continue discovery race) and its command history
         // reloads at once. Resolve before killing — kill clears the child pid that
         // discovery relies on. Fall back to --continue if the id isn't known.
-        let sid = resolveSessionId()
+        // Codex/LM Studio don't use our session ids, so they just --continue.
+        let sid = config.agent == .claude ? resolveSessionId() : nil
         session?.kill()
         let resumeArgs = sid.map { "--resume \($0)" } ?? "--continue"
         let proc = Process()
@@ -480,11 +481,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         // window keeps its id (and command history). Resolve before kill clears the
         // child pid; fall back to --continue when the id isn't known yet.
         saveScrollback()
-        let sid = resolveSessionId()
+        // Only Claude tracks the session id we resume by; Codex/LM Studio continue
+        // their own most-recent session via --continue (-> `codex resume --last`).
+        let sid = config.agent == .claude ? resolveSessionId() : nil
         session?.kill()
         let mode: SessionMode = sid.map { .resume(id: $0) } ?? .continue_
         let terminal = terminalView.getTerminal()
         session = ClaudeSession(projectPath: projectPath, cols: terminal.cols, rows: terminal.rows, mode: mode,
+                                agent: config.agent, model: config.agentModel,
                                 remoteControl: remoteControlEnabled, remoteName: config.projectName)
         session.onData = { [weak self] data in
             self?.handleSessionData(data)
@@ -493,6 +497,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             self?.handleSessionExit(code)
         }
         session.spawn()
+    }
+
+    /// Switch this window to a different agent CLI. Claude and Codex keep separate
+    /// transcripts, so the switch persists the choice per project and restarts the
+    /// session fresh with the new agent (no cross-agent resume).
+    private func switchAgent(_ agent: Agent, model: String?) {
+        // No-op if nothing actually changed — avoid a pointless restart.
+        if agent == config.agent && model == config.agentModel { return }
+        config.setAgent(agent, model: model)
+        let label = model.map { "\(agent.displayName) — \($0)" } ?? agent.displayName
+        overlay.showMessage("Switching to \(label)…")
+        saveScrollback()
+        session?.kill()
+        let terminal = terminalView.getTerminal()
+        session = ClaudeSession(projectPath: projectPath, cols: terminal.cols, rows: terminal.rows,
+                                mode: .new, agent: agent, model: model,
+                                remoteControl: remoteControlEnabled, remoteName: config.projectName)
+        session.onData = { [weak self] data in self?.handleSessionData(data) }
+        session.onExit = { [weak self] code in self?.handleSessionExit(code) }
+        session.spawn()
+        sendStatusUpdate()
     }
 
     private func toggleRemoteControl() {
@@ -538,6 +563,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             cols: max(cols, 10),
             rows: max(rows, 5),
             mode: sessionMode,
+            agent: config.agent,
+            model: config.agentModel,
             remoteControl: remoteControlEnabled,
             remoteName: config.projectName
         )
@@ -780,6 +807,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     // re-parses only when Claude rewrites the file, which it does after each
     // assistant message and after `/compact` finishes.
     private func pollSessionSize() {
+        // Only Claude Code writes the statusLine JSON these metrics come from.
+        // For Codex/LM Studio, clear them so the size/cost chips don't show stale
+        // Claude values left over from an earlier session in this project.
+        guard config.agent == .claude else {
+            if statusBarState.contextTokens != 0 || statusBarState.costUSD != 0 {
+                statusBarState.contextTokens = 0
+                statusBarState.contextFraction = 0
+                statusBarState.costUSD = 0
+                statusBarState.burnUSDPerHour = 0
+                statusBarState.contextModel = nil
+                sendStatusUpdate()
+            }
+            return
+        }
         restoreLastCommandIfNeeded()
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self, let m = self.sessionSize.read(projectPath: self.projectPath) else { return }
@@ -861,6 +902,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             contextLimit: statusBarState.contextLimit,
             contextFraction: statusBarState.contextFraction,
             model: statusBarState.contextModel ?? "",
+            agentName: config.agent.rawValue,
+            agentModel: config.agentModel,
             costUSD: statusBarState.costUSD,
             burnUSDPerHour: statusBarState.burnUSDPerHour,
             bgAgents: statusBarState.bgAgents,
@@ -909,8 +952,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
                 onRestart: { [weak self] in self?.handleCtrlR() },
                 onUpdate: { [weak self] in self?.sendStatusUpdate() })
         case "model":
-            // Open Claude Code's model picker in the session.
-            session?.write([UInt8]("/model\r".utf8))
+            // Choose the agent CLI (Claude Code / Codex / LM Studio model).
+            showAgentOverlay(
+                overlay: overlay,
+                current: config.agent,
+                currentModel: config.agentModel,
+                onChooseClaudeModel: { [weak self] in self?.session?.write([UInt8]("/model\r".utf8)) },
+                onSwitch: { [weak self] agent, model in self?.switchAgent(agent, model: model) },
+                onUpdate: { [weak self] in self?.sendStatusUpdate() }
+            )
         case "push":
             let cwd = config.projectPath
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in

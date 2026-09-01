@@ -40,6 +40,8 @@ struct ProjectJson: Codable {
     var jira: JiraConfig?
     var notify_on_completion: Bool?
     var sound_on_completion: Bool?   // legacy — read for back-compat, no longer written
+    var agent: String?               // "claude" | "codex" | "lmstudio"
+    var agent_model: String?         // model id for codex/lmstudio (or claude --model)
 }
 
 class Config {
@@ -82,6 +84,8 @@ class Config {
         if let l = updates.linear { existing.linear = l }
         if let j = updates.jira { existing.jira = j }
         if let n = updates.notify_on_completion { existing.notify_on_completion = n }
+        if let a = updates.agent { existing.agent = a }
+        if updates.agent != nil { existing.agent_model = updates.agent_model }  // may clear
 
         try? FileManager.default.createDirectory(atPath: orchDir, withIntermediateDirectories: true)
         let configPath = orchDir + "/project.json"
@@ -120,6 +124,19 @@ class Config {
     func setNotifyOnCompletion(_ on: Bool) {
         var updates = ProjectJson()
         updates.notify_on_completion = on
+        save(updates: updates)
+    }
+
+    /// The coding-agent CLI this project launches. Defaults to Claude Code.
+    var agent: Agent { Agent(rawValue: loadProjectJson().agent ?? "") ?? .claude }
+
+    /// The model for the current agent (codex/lmstudio `-m`, or claude `--model`).
+    var agentModel: String? { loadProjectJson().agent_model }
+
+    func setAgent(_ agent: Agent, model: String?) {
+        var updates = ProjectJson()
+        updates.agent = agent.rawValue
+        updates.agent_model = model
         save(updates: updates)
     }
 

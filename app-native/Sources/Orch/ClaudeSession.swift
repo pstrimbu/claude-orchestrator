@@ -11,6 +11,8 @@ class ClaudeSession {
     private(set) var sessionId: String?
     private var mode: SessionMode
     private let projectPath: String
+    private let agent: Agent
+    private let model: String?
     private let remoteControl: Bool
     private let remoteName: String?
     private(set) var cols: Int
@@ -27,11 +29,14 @@ class ClaudeSession {
     var onExit: ((Int32) -> Void)?
 
     init(projectPath: String, cols: Int, rows: Int, mode: SessionMode,
+         agent: Agent = .claude, model: String? = nil,
          remoteControl: Bool = false, remoteName: String? = nil) {
         self.projectPath = projectPath
         self.cols = cols
         self.rows = rows
         self.mode = mode
+        self.agent = agent
+        self.model = model
         self.remoteControl = remoteControl
         self.remoteName = remoteName
     }
@@ -73,40 +78,10 @@ class ClaudeSession {
     }
 
     func spawn() {
-        let claudePath = resolveClaudePath()
-        Log.log("using claude at: \(claudePath)")
+        let binaryPath = resolveBinary()
+        Log.log("using \(agent.rawValue) at: \(binaryPath)")
 
-        var args = ["--dangerously-skip-permissions"]
-        switch mode {
-        case .new:
-            // Mint the id and tell Claude to use it, rather than spawning and then
-            // trying to work out which session we got. Pids aren't involved, so
-            // this can't be fooled by pid reuse. Minted per spawn on purpose: a
-            // UUID that already has a transcript would collide, so the
-            // .continue_ -> .new retry below must not reuse an earlier one.
-            let id = UUID().uuidString.lowercased()
-            sessionId = id
-            args += ["--session-id", id]
-        case .continue_:
-            // Claude resolves "most recent conversation here" itself; we can't
-            // dictate the id, so leave it to be discovered.
-            sessionId = nil
-            args.append("--continue")
-        case .resume(let id):
-            sessionId = id
-            args += ["--resume", id]
-        }
-
-        // Remote Control: launch this session with `--remote-control [name]` so it
-        // can be driven from claude.ai/code or the Claude mobile app. Claude prints
-        // a QR code + session URL to the terminal on startup.
-        if remoteControl {
-            args.append("--remote-control")
-            if let name = remoteName, !name.isEmpty { args.append(name) }
-        }
-
-        // Have Claude report its own status to us (see statusSettings()).
-        if let settings = statusSettings() { args += ["--settings", settings] }
+        let args = agent == .claude ? claudeArgs() : codexArgs()
 
         // Set up PTY
         var winSize = winsize(
@@ -136,10 +111,10 @@ class ClaudeSession {
             setenv("LINES", String(rows), 1)
             unsetenv("ANTHROPIC_API_KEY")
 
-            // exec claude
-            let cArgs = [claudePath] + args
+            // exec the agent CLI
+            let cArgs = [binaryPath] + args
             let cArgsCStr = cArgs.map { strdup($0)! } + [nil]
-            execvp(claudePath, cArgsCStr)
+            execvp(binaryPath, cArgsCStr)
 
             // If exec fails
             perror("execvp failed")
@@ -253,44 +228,61 @@ class ClaudeSession {
         childPid = 0
     }
 
-    private func resolveClaudePath() -> String {
-        // Try which via shell
-        let attempts = ["bash -lc \"which claude\"", "zsh -lc \"which claude\""]
-        for cmd in attempts {
-            if let path = shell(cmd)?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !path.isEmpty, !path.contains("not found") {
-                return path
-            }
+    /// Claude Code launch args (session-id minting, --continue/--resume, remote
+    /// control, and the statusLine settings orch reads its bar from).
+    private func claudeArgs() -> [String] {
+        var args = ["--dangerously-skip-permissions"]
+        switch mode {
+        case .new:
+            // Mint the id and tell Claude to use it, rather than spawning and then
+            // trying to work out which session we got. Pids aren't involved, so
+            // this can't be fooled by pid reuse. Minted per spawn on purpose: a
+            // UUID that already has a transcript would collide, so the
+            // .continue_ -> .new retry below must not reuse an earlier one.
+            let id = UUID().uuidString.lowercased()
+            sessionId = id
+            args += ["--session-id", id]
+        case .continue_:
+            // Claude resolves "most recent conversation here" itself; we can't
+            // dictate the id, so leave it to be discovered.
+            sessionId = nil
+            args.append("--continue")
+        case .resume(let id):
+            sessionId = id
+            args += ["--resume", id]
         }
-
-        // Check common paths
-        let common = [
-            "\(NSHomeDirectory())/.local/bin/claude",
-            "\(NSHomeDirectory())/.claude/bin/claude",
-            "/usr/local/bin/claude",
-            "/opt/homebrew/bin/claude",
-        ]
-        for p in common {
-            if FileManager.default.fileExists(atPath: p) { return p }
+        if let m = model, !m.isEmpty { args += ["--model", m] }
+        // Remote Control: driveable from claude.ai/code or the Claude mobile app.
+        if remoteControl {
+            args.append("--remote-control")
+            if let name = remoteName, !name.isEmpty { args.append(name) }
         }
-
-        fatalError("Could not find 'claude' binary")
+        // Have Claude report its own status to us (see statusSettings()).
+        if let settings = statusSettings() { args += ["--settings", settings] }
+        return args
     }
 
-    private func shell(_ command: String) -> String? {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-        proc.arguments = ["-c", command]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = FileHandle.nullDevice
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            return String(data: data, encoding: .utf8)
-        } catch {
-            return nil
+    /// Codex CLI launch args, also used for LM Studio (Codex's local provider).
+    /// Codex tracks its own sessions, so there's no id to mint or discover;
+    /// --continue/--resume both map to `codex resume --last`.
+    private func codexArgs() -> [String] {
+        sessionId = nil
+        var flags = ["--dangerously-bypass-approvals-and-sandbox"]
+        if agent == .lmstudio { flags += ["--oss", "--local-provider", "lmstudio"] }
+        if let m = model, !m.isEmpty { flags += ["-m", m] }
+
+        switch mode {
+        case .new:
+            return flags
+        case .continue_, .resume:
+            // `resume` is a subcommand and must come first.
+            return ["resume", "--last"] + flags
         }
     }
+
+    private func resolveBinary() -> String {
+        if let p = AgentTools.resolve(agent.binaryName, common: agent.commonPaths) { return p }
+        fatalError("Could not find '\(agent.binaryName)' binary for \(agent.rawValue)")
+    }
+
 }

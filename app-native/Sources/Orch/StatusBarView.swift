@@ -18,6 +18,8 @@ struct StatusBarData {
     var contextLimit = 1_000_000
     var contextFraction = 0.0     // Claude's own used_percentage/100 when available
     var model = ""
+    var agentName = "claude"      // "claude" | "codex" | "lmstudio"
+    var agentModel: String?       // model id for codex/lmstudio
     var costUSD = 0.0
     var burnUSDPerHour = 0.0
     var bgAgents = 0
@@ -46,7 +48,7 @@ struct StatusBarView: View {
         HStack(spacing: 0) {
             projectChip
             separator
-            if !model.data.model.isEmpty { modelChip; separator }
+            modelChip; separator
             sizeChip
             if model.data.costUSD > 0 { costChip }
             if model.data.burnUSDPerHour > 0 { burnChip }
@@ -104,11 +106,12 @@ struct StatusBarView: View {
 
     private var modelChip: some View {
         sectionButton("model") {
-            Text(modelShort)
+            Text(agentChipLabel)
                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 .foregroundColor(Color(hex: 0x2563eb))
+                .lineLimit(1)
         }
-        .help(model.data.model)
+        .help(agentChipHelp)
     }
 
     private var sizeChip: some View {
@@ -313,6 +316,33 @@ struct StatusBarView: View {
         if m.contains("fable") { return "Fable" }
         if m.contains("mythos") { return "Mythos" }
         return model.data.model
+    }
+
+    /// The model chip's text: the agent, plus its model where known. Claude uses
+    /// the model it reports via its statusLine; Codex/LM Studio show the picked id.
+    private var agentChipLabel: String {
+        switch model.data.agentName {
+        case "codex":
+            return model.data.agentModel.map { "Codex \u{00B7} \(shortModel($0))" } ?? "Codex"
+        case "lmstudio":
+            return "LM \u{00B7} \(shortModel(model.data.agentModel ?? "?"))"
+        default:  // claude
+            return model.data.model.isEmpty ? "Claude" : modelShort
+        }
+    }
+
+    private var agentChipHelp: String {
+        switch model.data.agentName {
+        case "codex": return "Codex CLI — click to switch agent"
+        case "lmstudio": return "LM Studio: \(model.data.agentModel ?? "") — click to switch agent"
+        default: return model.data.model.isEmpty ? "Claude Code — click to switch agent" : model.data.model
+        }
+    }
+
+    /// Trim a long model id to something that fits the chip.
+    private func shortModel(_ id: String) -> String {
+        let tail = id.split(separator: "/").last.map(String.init) ?? id
+        return tail.count > 18 ? String(tail.prefix(17)) + "\u{2026}" : tail
     }
 
     private var costLabel: String {
