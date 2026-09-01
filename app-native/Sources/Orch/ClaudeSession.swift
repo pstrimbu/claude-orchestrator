@@ -81,6 +81,9 @@ class ClaudeSession {
         let binaryPath = resolveBinary()
         Log.log("using \(agent.rawValue) at: \(binaryPath)")
 
+        // Codex's LM Studio provider needs LM Studio's local server up first.
+        if agent == .lmstudio { AgentTools.ensureLMStudioServer() }
+
         let args = agent == .claude ? claudeArgs() : codexArgs()
 
         // Set up PTY

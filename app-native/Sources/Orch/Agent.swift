@@ -94,6 +94,15 @@ enum AgentTools {
         } catch { return nil }
     }
 
+    /// LM Studio's local server must be running before Codex's `--oss
+    /// --local-provider lmstudio` can reach it (otherwise: "LM Studio is not
+    /// responding"). `lms server start` is fast and idempotent, so just run it.
+    static func ensureLMStudioServer() {
+        guard let lms = resolve("lms",
+                common: ["\(NSHomeDirectory())/.lmstudio/bin/lms", "/opt/homebrew/bin/lms"]) else { return }
+        _ = runCapture(lms, ["server", "start"])
+    }
+
     static func runCapture(_ path: String, _ args: [String]) -> String? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: path)
