@@ -506,6 +506,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         // No-op if nothing actually changed — avoid a pointless restart.
         if agent == config.agent && model == config.agentModel { return }
         config.setAgent(agent, model: model)
+        // Remote Control only applies to Claude; drop it when leaving Claude so the
+        // new agent doesn't launch with a stale flag and the chip reads correctly.
+        if agent != .claude { remoteControlEnabled = false }
         let label = model.map { "\(agent.displayName) — \($0)" } ?? agent.displayName
         overlay.showMessage("Switching to \(label)…")
         saveScrollback()
@@ -521,6 +524,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     }
 
     private func toggleRemoteControl() {
+        // Remote Control is a Claude Code launch flag; Codex/LM Studio have no
+        // equivalent (Codex's own remote is a separate experimental daemon).
+        guard config.agent == .claude else {
+            overlay.showMessage("Remote Control is available with Claude Code only")
+            return
+        }
         remoteControlEnabled.toggle()
         sendStatusUpdate()
 
@@ -898,6 +907,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             sessionLabel: sessionLabel(),
             lastCommand: lastCommand,
             remoteActive: remoteControlEnabled,
+            remoteAvailable: config.agent == .claude,
             contextTokens: statusBarState.contextTokens,
             contextLimit: statusBarState.contextLimit,
             contextFraction: statusBarState.contextFraction,

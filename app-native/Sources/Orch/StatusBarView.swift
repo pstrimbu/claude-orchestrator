@@ -14,6 +14,7 @@ struct StatusBarData {
     var sessionLabel = ""
     var lastCommand: String?
     var remoteActive = false
+    var remoteAvailable = true    // Remote Control is a Claude Code feature only
     var contextTokens = 0
     var contextLimit = 1_000_000
     var contextFraction = 0.0     // Claude's own used_percentage/100 when available
@@ -246,17 +247,32 @@ struct StatusBarView: View {
         }
     }
 
+    @ViewBuilder
     private var remoteChip: some View {
-        sectionButton("remote") {
+        if model.data.remoteAvailable {
+            sectionButton("remote") {
+                HStack(spacing: 5) {
+                    Image(systemName: model.data.remoteActive
+                          ? "antenna.radiowaves.left.and.right.circle.fill"
+                          : "antenna.radiowaves.left.and.right")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(model.data.remoteActive ? "Remote ON" : "Remote")
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                }
+                .foregroundColor(model.data.remoteActive ? Color(hex: 0x1a7f37) : Color(hex: 0x2563eb))
+            }
+        } else {
+            // Dimmed, non-interactive: Remote Control is Claude Code-only.
             HStack(spacing: 5) {
-                Image(systemName: model.data.remoteActive
-                      ? "antenna.radiowaves.left.and.right.circle.fill"
-                      : "antenna.radiowaves.left.and.right")
+                Image(systemName: "antenna.radiowaves.left.and.right.slash")
                     .font(.system(size: 11, weight: .semibold))
-                Text(model.data.remoteActive ? "Remote ON" : "Remote")
+                Text("Remote")
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
             }
-            .foregroundColor(model.data.remoteActive ? Color(hex: 0x1a7f37) : Color(hex: 0x2563eb))
+            .foregroundColor(dim.opacity(0.5))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 2)
+            .help("Remote Control is available with Claude Code only")
         }
     }
 
