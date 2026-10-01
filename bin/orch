@@ -66,6 +66,39 @@ load_env() {
 load_env "$PROJECT_PATH/.env"
 load_env "$REPO_DIR/.env"
 
+# Pre-trust the folder for its agent CLI. Claude's trust prompt defaults to
+# "No, exit" and trust isn't inherited from a trusted parent (2026-10-01), so an
+# untrusted folder would sit on that prompt — or quit on an inbox message.
+python3 - "$PROJECT_PATH" <<'PY' || true
+import json, os, sys, tempfile
+path = sys.argv[1]
+cfg_p = os.path.join(path, ".orch/project.json")
+cfg = json.load(open(cfg_p)) if os.path.exists(cfg_p) else {}
+agent, acct = cfg.get("agent") or "claude", cfg.get("account")
+acct_dir = None
+reg = os.path.expanduser("~/.config/orch/accounts.json")
+if acct and os.path.exists(reg):
+    acct_dir = next((a.get("dir") for a in json.load(open(reg)).get("accounts", []) if a["id"] == acct), None)
+if agent == "claude":
+    p = os.path.join(acct_dir, ".claude.json") if acct_dir else os.path.expanduser("~/.claude.json")
+    d = json.load(open(p)) if os.path.exists(p) else {}
+    e = d.setdefault("projects", {}).setdefault(path, {})
+    if not e.get("hasTrustDialogAccepted"):
+        e["hasTrustDialogAccepted"] = True
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), prefix=".claude.json.")
+        with os.fdopen(fd, "w") as f:
+            json.dump(d, f, indent=2)
+        if os.path.exists(p):
+            os.chmod(tmp, os.stat(p).st_mode & 0o777)
+        os.replace(tmp, p)
+else:
+    p = os.path.join(acct_dir or os.path.expanduser("~/.codex"), "config.toml")
+    text = open(p).read() if os.path.exists(p) else ""
+    if f'[projects."{path}"]' not in text:
+        with open(p, "a") as f:
+            f.write(f'\n[projects."{path}"]\ntrust_level = "trusted"\n')
+PY
+
 # Build native app if needed
 BINARY="$APP_DIR/.build/debug/orch"
 if [ ! -f "$BINARY" ]; then
