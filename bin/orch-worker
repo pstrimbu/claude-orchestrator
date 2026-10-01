@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # orch-worker — start a worker session in its own git worktree.
 #
-#   orch-worker <repo> <name> [--agent claude|codex|lmstudio] [--model M] [--no-launch]
+#   orch-worker <repo> <name> [--agent claude|codex|lmstudio] [--model M] [--base REF] [--no-launch]
 #   orch-worker rm <repo> <name>        remove the worktree (refuses if dirty)
 #
-# Creates <parent>/<repo>-wt-<name> on branch wt/<name> (off the repo's current
-# main), links the gitignored files a worker needs, pre-trusts the folder for
+# Creates <parent>/<repo>-wt-<name> on branch wt/<name> (off --base, default the
+# repo's main — use the lead's goal branch when work integrates there), links the gitignored files a worker needs, pre-trusts the folder for
 # the agent CLI, writes the worktree's .orch/project.json (agent + model), and
 # launches orch there. Each worktree has its own .orch/, so sessions never
 # collide on pid/status/inbox files.
@@ -22,11 +22,12 @@ if [ "${1:-}" = "rm" ]; then remove=1; shift; fi
 [ $# -ge 2 ] || usage
 repo="$(cd "$1" && pwd)"; name="$2"; shift 2
 
-agent=claude; model=""; launch=1
+agent=claude; model=""; base=""; launch=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --agent) agent="$2"; shift 2 ;;
     --model) model="$2"; shift 2 ;;
+    --base) base="$2"; shift 2 ;;
     --no-launch) launch=0; shift ;;
     *) usage ;;
   esac
@@ -57,8 +58,9 @@ PY
 fi
 
 if [ ! -d "$wt" ]; then
-  base="$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
+  [ -n "$base" ] || base="$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
   base="${base:-main}"
+  git -C "$repo" fetch --quiet origin 2>/dev/null || true
   if git -C "$repo" show-ref --quiet "refs/heads/$branch"; then
     git -C "$repo" worktree add "$wt" "$branch"
   else
