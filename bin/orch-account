@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+"""orch-account — subscription accounts that orch sessions run on.
+
+  orch-account list [--refresh] [--json]   accounts, identity, usage, limits, sessions
+  orch-account add <claude|codex> <id> [--label L] [--priority N]
+                                           create an account (its own config dir)
+  orch-account login <id>                  sign that account in (interactive; run it yourself)
+  orch-account remove <id>                 sign it out and delete its folder (not the defaults)
+  orch-account use <session> <id>          move a running session to an account (resumes)
+  orch-account enable|disable <id>
+  orch-account priority <id> <n>           lower = tried first
+  orch-account policy auto|confirm         what happens when a session hits a limit
+
+Registry: ~/.config/orch/accounts.json (no secrets). Each added account gets
+~/.config/orch/accounts/<id>/ as its CLAUDE_CONFIG_DIR / CODEX_HOME: its own
+login, with memory, history, settings, skills and plugins shared with the
+default config by symlink, so a session can resume on another account. The
+default logins (~/.claude, ~/.codex) are the accounts claude-main / codex-main.
+
+Under `auto`, a session whose account hits a limit restarts on the next
+enabled account of the same type and carries on; with none left it shows
+`limited` and the lead moves the work to the other agent type.
+"""
+import json, os, shutil, signal, subprocess, sys, time
+from datetime import datetime
+from pathlib import Path
+
+ROOT = Path.home() / ".config/orch"
+REG = ROOT / "accounts.json"
+ACCTS = ROOT / "accounts"
+SESSIONS = ROOT / "sessions"
+
+# Shared with the default config: what a resumed session needs (history,
+# memory, transcripts) and what makes it behave the same (settings, skills…).
+CLAUDE_SHARED = ["CLAUDE.md", "settings.json", "settings.local.json", "skills", "plugins",
+                 "hooks", "agents", "commands", "output-styles", "keybindings.json",
+                 "projects", "history.jsonl", "file-history", "todos", "plans"]
+CODEX_SHARED = ["config.toml", "AGENTS.md", "sessions", "session_index.jsonl", "history.jsonl",
+                "memories_1.sqlite", "goals_1.sqlite", "plugins", "skills", "prompts"]
+
+
+def load():
+    if REG.exists():
+        return json.loads(REG.read_text())
+    reg = {"policy": {"switch": "confirm"}, "accounts": [
+        {"id": "claude-main", "type": "claude", "label": "Claude (default login)", "dir": None,
+         "priority": 1, "enabled": True},
+        {"id": "codex-main", "type": "codex", "label": "Codex (default login)", "dir": None,
+         "priority": 1, "enabled": True},
+    ]}
+    save(reg)
+    return reg
+
+
+def save(reg):
+    ROOT.mkdir(parents=True, exist_ok=True)
+    tmp = REG.with_suffix(".tmp")
+    tmp.write_text(json.dumps(reg, indent=2) + "\n")
+    os.replace(tmp, REG)
+
+
+def find(reg, aid):
+    for a in reg["accounts"]:
+        if a["id"] == aid:
+            return a
+    sys.exit(f"orch-account: no account '{aid}' (see orch-account list)")
+
+
+def env_for(a):
+    env = dict(os.environ)
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    env.pop("CODEX_HOME", None)
+    if a.get("dir"):
+        env["CLAUDE_CONFIG_DIR" if a["type"] == "claude" else "CODEX_HOME"] = a["dir"]
+    return env
+
+
+def binary(name):
+    for p in [shutil.which(name), str(Path.home() / ".local/bin" / name),
+              f"/opt/homebrew/bin/{name}", f"/usr/local/bin/{name}"]:
+        if p and os.access(p, os.X_OK):
+            return p
+    return name
+
+
+def identity(a):
+    """Email/plan as the CLI reports them for this account's login."""
+    try:
+        if a["type"] == "claude":
+            out = subprocess.run([binary("claude"), "auth", "status"], env=env_for(a),
+                                 capture_output=True, text=True, timeout=30).stdout
+            d = json.loads(out)
+            if not d.get("loggedIn"):
+                return {"logged_in": False}
+            return {"logged_in": True, "email": d.get("email"), "plan": d.get("subscriptionType"),
+                    "org": d.get("orgName")}
+        out = subprocess.run([binary("codex"), "login", "status"], env=env_for(a),
+                             capture_output=True, text=True, timeout=30)
+        text = (out.stdout + out.stderr).strip()
+        if "Not logged in" in text or out.returncode != 0:
+            return {"logged_in": False}
+        info = {"logged_in": True, "plan": "chatgpt" if "ChatGPT" in text else "api-key"}
+        home = Path(a["dir"]) if a.get("dir") else Path.home() / ".codex"
+        try:  # email from the id token's claims, if present
+            import base64
+            tok = json.loads((home / "auth.json").read_text())["tokens"]["id_token"]
+            part = tok.split(".")[1]
+            claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+            info["email"] = claims.get("email")
+            plan = (claims.get("https://api.openai.com/auth") or {}).get("chatgpt_plan_type")
+            if plan:
+                info["plan"] = plan
+        except Exception:
+            pass
+        return info
+    except Exception as e:
+        return {"logged_in": None, "error": str(e)[:80]}
+
+
+def usage(aid):
+    try:
+        return json.loads((ACCTS / aid / "usage.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def live_sessions():
+    out = {}
+    for f in SESSIONS.glob("*.json") if SESSIONS.exists() else []:
+        try:
+            reg = json.loads(f.read_text())
+            os.kill(int(reg["pid"]), 0)
+            st = json.loads((Path(reg["path"]) / ".orch/status.json").read_text())
+        except Exception:
+            continue
+        if st.get("account"):
+            out.setdefault(st["account"], []).append(st["name"])
+    return out
+
+
+def fmt_reset(ts):
+    if not ts:
+        return ""
+    d = datetime.fromtimestamp(ts)
+    return d.strftime("%H:%M") if d.date() == datetime.now().date() else d.strftime("%a %H:%M")
+
+
+def cmd_list(args):
+    reg = load()
+    refresh = "--refresh" in args
+    if refresh:
+        for a in reg["accounts"]:
+            a["identity"] = identity(a)
+            a["identity"]["checked_at"] = int(time.time())
+        save(reg)
+    sess = live_sessions()
+    rows = []
+    for a in sorted(reg["accounts"], key=lambda a: (a["type"], a.get("priority", 100))):
+        u = usage(a["id"])
+        ident = a.get("identity", {})
+        limited = u.get("limited_until", 0) > time.time()
+        state = ("disabled" if not a.get("enabled", True) else
+                 "logged-out" if ident.get("logged_in") is False else
+                 "limited" if limited else "ok")
+        rows.append({**a, "usage": u, "state": state, "sessions": sess.get(a["id"], [])})
+    if "--json" in args:
+        print(json.dumps({"policy": reg["policy"], "accounts": rows}, indent=2))
+        return
+    print(f"switch policy: {reg['policy'].get('switch', 'confirm')}")
+    hdr = ("ID", "TYPE", "PRI", "STATE", "EMAIL", "PLAN", "5H", "WEEK", "SESSIONS")
+    table = [hdr]
+    for r in rows:
+        u, i = r["usage"], r.get("identity", {})
+        def w(k):
+            p = u.get(f"{k}_pct")
+            return "-" if p is None else f"{p:.0f}% ({fmt_reset(u.get(f'{k}_resets_at'))})"
+        table.append((r["id"], r["type"], str(r.get("priority", "")), r["state"],
+                      i.get("email") or "?", i.get("plan") or "?", w("five_hour"), w("weekly"),
+                      ",".join(r["sessions"]) or "-"))
+    widths = [max(len(t[c]) for t in table) for c in range(len(hdr))]
+    for t in table:
+        print("  ".join(v.ljust(widths[c]) for c, v in enumerate(t)).rstrip())
+    if not refresh:
+        print("(identity cached; --refresh to re-check logins)")
+
+
+def link_shared(src_root, dst, names):
+    for n in names:
+        src = src_root / n
+        if src.exists() and not (dst / n).exists():
+            (dst / n).symlink_to(src)
+
+
+def cmd_add(args):
+    if len(args) < 2 or args[0] not in ("claude", "codex"):
+        sys.exit(__doc__)
+    typ, aid = args[0], args[1]
+    label = args[args.index("--label") + 1] if "--label" in args else aid
+    prio = int(args[args.index("--priority") + 1]) if "--priority" in args else 10
+    reg = load()
+    if any(a["id"] == aid for a in reg["accounts"]):
+        sys.exit(f"orch-account: '{aid}' already exists")
+    d = ACCTS / aid / "config"
+    d.mkdir(parents=True, exist_ok=True)
+    if typ == "claude":
+        link_shared(Path.home() / ".claude", d, CLAUDE_SHARED)
+        # Its own .claude.json (that's where the login's account record lives):
+        # carry over onboarding/dismissal flags, folder trust and MCP servers so
+        # a fresh account doesn't stop on first-run dialogs.
+        src = Path.home() / ".claude.json"
+        base = json.loads(src.read_text()) if src.exists() else {}
+        cfg = {k: v for k, v in base.items() if isinstance(v, bool)}
+        cfg["projects"] = {p: {"hasTrustDialogAccepted": True}
+                           for p, v in base.get("projects", {}).items() if v.get("hasTrustDialogAccepted")}
+        if base.get("mcpServers"):
+            cfg["mcpServers"] = base["mcpServers"]
+        (d / ".claude.json").write_text(json.dumps(cfg, indent=2))
+    else:
+        link_shared(Path.home() / ".codex", d, CODEX_SHARED)
+    reg["accounts"].append({"id": aid, "type": typ, "label": label, "dir": str(d),
+                            "priority": prio, "enabled": True})
+    save(reg)
+    print(f"added {aid} ({typ}) at {d}\nnext: orch-account login {aid}")
+
+
+def cmd_login(args):
+    a = find(load(), args[0])
+    if a["type"] == "claude":
+        cmd = [binary("claude"), "auth", "login"]
+    else:
+        cmd = [binary("codex"), "login"]
+    print(f"signing in {a['id']} ({a.get('dir') or 'default login'}) — use the account you want here")
+    os.execvpe(cmd[0], cmd, env_for(a))
+
+
+def cmd_use(args):
+    if len(args) != 2:
+        sys.exit(__doc__)
+    target, aid = args
+    a = find(load(), aid)
+    path = Path(target) if Path(target).is_dir() else None
+    if path is None:
+        try:
+            path = Path(json.loads((SESSIONS / f"{target}.json").read_text())["path"])
+        except (OSError, ValueError, KeyError):
+            sys.exit(f"orch-account: no session '{target}' (see orch-sessions)")
+    try:
+        pid = int((path / ".orch/orch.pid").read_text())
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        sys.exit(f"orch-account: {path.name} isn't running")
+    st = json.loads((path / ".orch/status.json").read_text())
+    if st.get("agent") not in (a["type"], None):
+        sys.exit(f"orch-account: {path.name} runs {st.get('agent')}, {aid} is a {a['type']} account")
+    (path / ".orch/window-cmd.json").write_text(json.dumps({"account": aid}))
+    os.kill(pid, signal.SIGUSR2)
+    print(f"{path.name} → {aid} (restarting the session on it, resuming)")
+
+
+def cmd_remove(args):
+    reg = load()
+    a = find(reg, args[0])
+    if not a.get("dir"):
+        sys.exit(f"orch-account: {a['id']} is a default login; disable it instead")
+    users = live_sessions().get(a["id"], [])
+    if users:
+        sys.exit(f"orch-account: {a['id']} is in use by {', '.join(users)}; move them first")
+    # Sign out through the CLI so its stored login (Keychain / auth.json) goes too.
+    cmd = [binary("claude"), "auth", "logout"] if a["type"] == "claude" else [binary("codex"), "logout"]
+    subprocess.run(cmd, env=env_for(a), capture_output=True, timeout=30)
+    shutil.rmtree(ACCTS / a["id"], ignore_errors=True)
+    reg["accounts"] = [x for x in reg["accounts"] if x["id"] != a["id"]]
+    save(reg)
+    print(f"removed {a['id']}")
+
+
+def cmd_toggle(args, on):
+    reg = load()
+    find(reg, args[0])["enabled"] = on
+    save(reg)
+    print(f"{args[0]} {'enabled' if on else 'disabled'}")
+
+
+def cmd_priority(args):
+    reg = load()
+    find(reg, args[0])["priority"] = int(args[1])
+    save(reg)
+    print(f"{args[0]} priority {args[1]}")
+
+
+def cmd_policy(args):
+    if not args or args[0] not in ("auto", "confirm"):
+        sys.exit("orch-account policy auto|confirm")
+    reg = load()
+    reg["policy"]["switch"] = args[0]
+    save(reg)
+    print(f"switch policy: {args[0]}")
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return
+    c, rest = argv[0], argv[1:]
+    {"list": cmd_list, "add": cmd_add, "login": cmd_login, "use": cmd_use, "remove": cmd_remove,
+     "enable": lambda a: cmd_toggle(a, True), "disable": lambda a: cmd_toggle(a, False),
+     "priority": cmd_priority, "policy": cmd_policy}.get(c, lambda a: sys.exit(__doc__))(rest)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

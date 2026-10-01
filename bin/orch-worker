@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # orch-worker — start a worker session in its own git worktree.
 #
-#   orch-worker <repo> <name> [--agent claude|codex|lmstudio] [--model M] [--base REF] [--branch B] [--no-launch]
+#   orch-worker <repo> <name> [--agent claude|codex|lmstudio] [--model M] [--base REF] [--branch B] [--account ID] [--no-launch]
 #   orch-worker stop <repo> <name>      close the session's window (worktree stays)
 #   orch-worker rm <repo> <name>        close it and remove the worktree — refuses
 #                                       if anything is uncommitted; the branch is
@@ -14,6 +14,7 @@
 # collide on pid/status/inbox files. --branch B uses branch B instead of
 # wt/<name> — e.g. reopening a lead on its goal branch after it was removed:
 #   orch-worker <repo> lead --branch loops/g1-mobile-itinerary
+# --account ID runs it on that subscription account (orch-account list).
 #
 # Links: every path listed in <repo>/.loops/worker-links (or .orch/; one per line, relative
 # to the repo root) is symlinked from the main checkout into the worktree —
@@ -27,13 +28,14 @@ case "${1:-}" in rm|stop) action="$1"; shift ;; esac
 [ $# -ge 2 ] || usage
 repo="$(cd "$1" && pwd)"; name="$2"; shift 2
 
-agent=claude; model=""; base=""; branch_opt=""; launch=1
+agent=claude; model=""; base=""; branch_opt=""; account=""; launch=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --agent) agent="$2"; shift 2 ;;
     --model) model="$2"; shift 2 ;;
     --base) base="$2"; shift 2 ;;
     --branch) branch_opt="$2"; shift 2 ;;
+    --account) account="$2"; shift 2 ;;
     --no-launch) launch=0; shift ;;
     *) usage ;;
   esac
@@ -138,9 +140,15 @@ done <<< "$paths"
 # Claude's prompt defaults to "No, exit", and trust is NOT inherited from a
 # trusted parent (verified 2026-10-01), so every worktree needs its own entry.
 if [ "$agent" = claude ]; then
-  python3 - "$wt" <<'PY'
+  python3 - "$wt" "$account" <<'PY'
 import json, os, sys, tempfile
-path, wt = os.path.expanduser("~/.claude.json"), sys.argv[1]
+wt, acct = sys.argv[1], sys.argv[2]
+path = os.path.expanduser("~/.claude.json")
+reg = os.path.expanduser("~/.config/orch/accounts.json")
+if acct and os.path.exists(reg):   # an added account keeps its own .claude.json
+    for a in json.load(open(reg)).get("accounts", []):
+        if a["id"] == acct and a.get("dir"):
+            path = os.path.join(a["dir"], ".claude.json")
 with open(path) as f:
     cfg = json.load(f)
 entry = cfg.setdefault("projects", {}).setdefault(wt, {})
@@ -161,12 +169,13 @@ else
 fi
 
 mkdir -p "$wt/.orch"
-python3 - "$wt/.orch/project.json" "$(basename "$repo")-$name" "$agent" "$model" "$base" <<'PY'
+python3 - "$wt/.orch/project.json" "$(basename "$repo")-$name" "$agent" "$model" "$base" "$account" <<'PY'
 import json, sys, os
-path, pid, agent, model, base = sys.argv[1:]
+path, pid, agent, model, base, account = sys.argv[1:]
 cfg = json.load(open(path)) if os.path.exists(path) else {}
 cfg.update({"project_id": pid, "agent": agent, "tracker": {"type": "none"}})
 if base: cfg["worker_base"] = base   # where its work integrates; rm reports unmerged commits
+if account: cfg["account"] = account
 if model: cfg["agent_model"] = model
 else: cfg.pop("agent_model", None)
 open(path, "w").write(json.dumps(cfg, indent=2) + "\n")
@@ -174,5 +183,18 @@ PY
 
 echo "worker $name: $wt ($branch, $agent${model:+/$model})"
 if [ $launch = 1 ]; then
+  # One window per worktree: two would share .orch/ (status, inbox, pid).
+  # A window whose agent is still running gets focused instead; one whose
+  # agent has died is replaced.
+  pid="$(cat "$wt/.orch/orch.pid" 2>/dev/null || true)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    state="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("state",""))' "$wt/.orch/status.json" 2>/dev/null || true)"
+    if [ "$state" != exited ]; then
+      kill -USR1 "$pid"
+      echo "already running ($state) — focused its window"
+      exit 0
+    fi
+    stop_window
+  fi
   exec "$(dirname "$0")/orch" "$wt"
 fi

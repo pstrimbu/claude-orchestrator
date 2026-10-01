@@ -55,6 +55,8 @@ final class SessionBus {
         var model: String?
         var branch: String?
         var lastCommand: String
+        var account: String?
+        var limitedUntil: Date?
     }
 
     /// Called once a second from the status timer. Returns a message to deliver,
@@ -64,10 +66,14 @@ final class SessionBus {
         let pending = inboxFiles()
         // A dialog on screen (trust prompt, a question the agent asked) reads as
         // quiet, but nobody else can answer it: report it as its own state.
-        let state = !s.running ? "exited" : (idle ? (s.blockingPrompt ? "prompt" : "idle") : "busy")
+        let limited = (s.limitedUntil ?? .distantPast) > Date()
+        let state = !s.running ? "exited"
+            : limited ? "limited"
+            : (idle ? (s.blockingPrompt ? "prompt" : "idle") : "busy")
         writeStatus(s, state: state, pending: pending.count)
 
-        guard idle, !s.inputPending, !s.blockingPrompt, s.humanQuiet >= Self.humanQuiet,
+        // A limited session can't act on a message; hold it for after the switch/reset.
+        guard idle, !limited, !s.inputPending, !s.blockingPrompt, s.humanQuiet >= Self.humanQuiet,
               let next = pending.first else { return nil }
         // The previous message must have been answered: output resumed after the
         // delivery and has since gone quiet (ptyQuiet is measured from that output).
@@ -84,7 +90,8 @@ final class SessionBus {
     /// folder-trust prompt defaults to "No, exit". Never deliver into one; the
     /// message waits until a human answers it.
     static func showsBlockingPrompt(_ lettersTail: String) -> Bool {
-        let markers = ["trustthisfolder", "trustthecontents", "noexit", "entertoconfirm"]
+        let markers = ["trustthisfolder", "trustthecontents", "noexit", "entertoconfirm",
+                       "cannotusethebackgroundserver", "runwithoutdaemon"]
         let tail = String(lettersTail.suffix(1500))
         return markers.contains { tail.contains($0) }
     }
@@ -103,6 +110,31 @@ final class SessionBus {
             if CharacterSet.letters.contains(ch) { out.unicodeScalars.append(ch) }
         }
         return out.lowercased()
+    }
+
+    /// Queue a message from orch itself (same path as orch-send).
+    func enqueue(_ text: String) {
+        let name = String(format: "%@-orch-%d.md", Self.stamp(), Int.random(in: 1000...9999))
+        let tmp = inboxDir + "/" + name + ".tmp"
+        if FileManager.default.createFile(atPath: tmp, contents: Data((text + "\n").utf8)) {
+            _ = rename(tmp, inboxDir + "/" + name)
+        }
+    }
+
+    private static func stamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        return f.string(from: Date())
+    }
+
+    /// The CLIs' own "you're out" messages (Claude: "…usage limit reached…" /
+    /// "You've hit your limit"; Codex: "You've hit your usage limit"), matched
+    /// in the last few hundred letters of output so a model merely *discussing*
+    /// limits earlier in a long reply doesn't trip it.
+    static func showsLimitMessage(_ lettersTail: String) -> Bool {
+        let tail = String(lettersTail.suffix(400))
+        return ["usagelimitreached", "youvehityourlimit", "youvehityourusagelimit",
+                "limitreachedresets", "limitwillreset"].contains { tail.contains($0) }
     }
 
     func delivered(_ file: String) {
@@ -145,6 +177,10 @@ final class SessionBus {
         ]
         if let m = s.model { obj["model"] = m }
         if let b = s.branch { obj["branch"] = b }
+        if let a = s.account { obj["account"] = a }
+        if let u = s.limitedUntil, u > Date() {
+            obj["limited_until"] = ISO8601DateFormatter().string(from: u)
+        }
         obj["updated_at"] = ISO8601DateFormatter().string(from: Date())
         writeJSON(obj, to: statusPath)
     }

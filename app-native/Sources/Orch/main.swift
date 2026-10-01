@@ -53,6 +53,18 @@ if let currentPath = ProcessInfo.processInfo.environment["PATH"],
     }
 }
 
+// Drop session variables inherited from whatever launched us. When a Claude
+// Code or Codex session runs `orch` / `orch-worker` (a lead starting workers),
+// its CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_CHILD_SESSION, messaging socket,
+// CLAUDE_EFFORT… would otherwise reach our agent, which then runs as that
+// session's *child*: no transcript of its own (so no resume) and the parent's
+// effort level. Every orch session must start as its own top-level session.
+for key in ProcessInfo.processInfo.environment.keys
+where key.hasPrefix("CLAUDE_CODE_") || key.hasPrefix("CODEX_")
+    || ["CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CONFIG_DIR"].contains(key) {
+    unsetenv(key)
+}
+
 // Load .env files
 EnvLoader.load(path: projectPath + "/.env")
 let repoDir = (CommandLine.arguments[0] as NSString).deletingLastPathComponent + "/../.."

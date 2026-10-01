@@ -15,6 +15,9 @@ class ClaudeSession {
     private let model: String?
     private let remoteControl: Bool
     private let remoteName: String?
+    /// Account env (CLAUDE_CONFIG_DIR / CODEX_HOME); a nil value is unset so the
+    /// CLI falls back to its default login.
+    private let accountEnv: [String: String?]
     private(set) var cols: Int
     private(set) var rows: Int
     private(set) var lastActivity = Date()
@@ -30,7 +33,8 @@ class ClaudeSession {
 
     init(projectPath: String, cols: Int, rows: Int, mode: SessionMode,
          agent: Agent = .claude, model: String? = nil,
-         remoteControl: Bool = false, remoteName: String? = nil) {
+         remoteControl: Bool = false, remoteName: String? = nil,
+         accountEnv: [String: String?] = [:]) {
         self.projectPath = projectPath
         self.cols = cols
         self.rows = rows
@@ -39,6 +43,7 @@ class ClaudeSession {
         self.model = model
         self.remoteControl = remoteControl
         self.remoteName = remoteName
+        self.accountEnv = accountEnv
     }
 
     /// Where Claude Code drops its own status JSON for us. See `statusSettings()`.
@@ -116,6 +121,12 @@ class ClaudeSession {
             // Same for Codex: an OPENAI_API_KEY in a loaded .env would bill the
             // API instead of the ChatGPT subscription the CLI is logged in with.
             unsetenv("OPENAI_API_KEY")
+            // Which subscription account the CLI runs on (AccountStore).
+            unsetenv("CLAUDE_CONFIG_DIR")
+            unsetenv("CODEX_HOME")
+            for (k, v) in accountEnv {
+                if let v = v { setenv(k, v, 1) } else { unsetenv(k) }
+            }
 
             // exec the agent CLI
             let cArgs = [binaryPath] + args
@@ -273,7 +284,12 @@ class ClaudeSession {
     /// --continue/--resume both map to `codex resume --last`.
     private func codexArgs() -> [String] {
         sessionId = nil
-        var flags = ["--dangerously-bypass-approvals-and-sandbox"]
+        // --no-daemon: each orch session runs on its own instead of attaching to
+        // the shared background server. The shared server is tied to one Codex
+        // home (wrong for per-account CODEX_HOME), and when it is unavailable
+        // Codex 0.159 asks at startup with "Cancel" preselected — an injected
+        // Enter then quit the session (2026-10-01).
+        var flags = ["--dangerously-bypass-approvals-and-sandbox", "--no-daemon"]
         if agent == .lmstudio { flags += ["--oss", "--local-provider", "lmstudio"] }
         if let m = model, !m.isEmpty { flags += ["-m", m] }
 

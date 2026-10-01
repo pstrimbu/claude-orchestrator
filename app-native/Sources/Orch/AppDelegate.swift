@@ -25,6 +25,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     private var history: CommandHistoryService!
     private var sessionStore: SessionStore!
     private var bus: SessionBus!
+    /// Subscription account the current session runs on, and when it started
+    /// (Codex usage is read from session logs written after that).
+    private var account: Account?
+    private var sessionStartedAt = Date()
+    private var limitedUntil: Date?
+    private var usageTicks = 0
     /// Letters-only tail of recent PTY output, for spotting a blocking prompt.
     private var recentScreen = ""
     private var overlay = OverlayManager()
@@ -178,6 +184,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         statusTimer = scheduleCommon(every: 1.0) { [weak self] in
             self?.sendStatusUpdate()
             self?.pollInbox()
+            self?.pollUsage()
         }
         gitPollTimer = scheduleCommon(every: 10.0) { [weak self] in self?.pollGitInfo() }
         pollSessionSize()
@@ -505,9 +512,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         session?.kill()
         let mode: SessionMode = sid.map { .resume(id: $0) } ?? .continue_
         let terminal = terminalView.getTerminal()
-        session = ClaudeSession(projectPath: projectPath, cols: terminal.cols, rows: terminal.rows, mode: mode,
-                                agent: config.agent, model: config.agentModel,
-                                remoteControl: remoteControlEnabled, remoteName: config.projectName)
+        session = makeSession(cols: terminal.cols, rows: terminal.rows, mode: mode,
+                              agent: config.agent, model: config.agentModel)
         session.onData = { [weak self] data in
             self?.handleSessionData(data)
         }
@@ -532,9 +538,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         saveScrollback()
         session?.kill()
         let terminal = terminalView.getTerminal()
-        session = ClaudeSession(projectPath: projectPath, cols: terminal.cols, rows: terminal.rows,
-                                mode: .new, agent: agent, model: model,
-                                remoteControl: remoteControlEnabled, remoteName: config.projectName)
+        session = makeSession(cols: terminal.cols, rows: terminal.rows, mode: .new,
+                              agent: agent, model: model)
         session.onData = { [weak self] data in self?.handleSessionData(data) }
         session.onExit = { [weak self] code in self?.handleSessionExit(code) }
         session.spawn()
@@ -584,17 +589,85 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
 
     // MARK: - Session
 
+    /// Every agent process is built here, so each one runs on the resolved
+    /// subscription account (CLAUDE_CONFIG_DIR / CODEX_HOME).
+    private func makeSession(cols: Int, rows: Int, mode: SessionMode, agent: Agent, model: String?) -> ClaudeSession {
+        account = AccountStore.resolve(id: config.accountId, agent: agent)
+        sessionStartedAt = Date()
+        limitedUntil = nil
+        if let a = account { Log.log("account: \(a.id)") }
+        return ClaudeSession(projectPath: projectPath, cols: cols, rows: rows, mode: mode,
+                             agent: agent, model: model,
+                             remoteControl: remoteControlEnabled, remoteName: config.projectName,
+                             accountEnv: account?.env ?? [:])
+    }
+
+    // MARK: - Accounts (usage, limits, switching)
+
+    /// Every ~15s: record this account's usage, and notice when it's out —
+    /// either a window at 100% or the CLI's own limit message on screen.
+    private func pollUsage() {
+        usageTicks += 1
+        guard usageTicks % 15 == 0, let acct = account, session?.running == true else { return }
+        let statusFile = ClaudeSession.statusFile(projectPath: projectPath)
+        let codexHome = acct.codexHome, cwd = projectPath, since = sessionStartedAt
+        let isClaude = acct.type == "claude"
+        let screen = recentScreen
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var u = (isClaude ? AccountStore.claudeUsage(statusLineFile: statusFile)
+                              : AccountStore.codexUsage(codexHome: codexHome, cwd: cwd, since: since))
+                    ?? AccountStore.readUsage(acct.id) ?? AccountUsage()
+            var until: Date?
+            if (u.fiveHourPct ?? 0) >= 100 { until = u.fiveHourReset }
+            if (u.weeklyPct ?? 0) >= 100 { until = max(until ?? .distantPast, u.weeklyReset ?? .distantPast) }
+            // Trust the on-screen message only when usage is plausibly near the
+            // cap (or unknown): a model *writing* that sentence — quoting an error,
+            // working on rate-limit code — must not trigger a switch.
+            let known = [u.fiveHourPct, u.weeklyPct].compactMap { $0 }
+            let nearCap = known.isEmpty || known.contains { $0 >= 90 }
+            if until == nil && nearCap && SessionBus.showsLimitMessage(screen) {
+                // Limit message without numbers: assume the soonest known reset, else an hour.
+                until = [u.fiveHourReset, u.weeklyReset].compactMap { $0 }.filter { $0 > Date() }.min()
+                    ?? Date().addingTimeInterval(3600)
+            }
+            u.limitedUntil = until
+            AccountStore.writeUsage(acct.id, u, source: cwd)
+            DispatchQueue.main.async { self?.accountLimited(until) }
+        }
+    }
+
+    private func accountLimited(_ until: Date?) {
+        let wasLimited = limitedUntil != nil
+        limitedUntil = until
+        guard let until = until, !wasLimited, let current = account else { return }
+        Log.log("account \(current.id) limited until \(until)")
+        guard AccountStore.load().policy == "auto" else { return }
+        if let next = AccountStore.next(after: current) {
+            switchAccount(to: next.id, reason: "\(current.id) hit its usage limit")
+        }
+        // No other account of this type: stay `limited`; the lead moves the work
+        // to the other agent type (playbook) or it waits for the reset.
+    }
+
+    /// Restart this session on another account, resuming the same conversation
+    /// (history is shared across account dirs), then nudge it to carry on.
+    private func switchAccount(to id: String, reason: String, nudge: Bool = true) {
+        guard let target = AccountStore.load().accounts.first(where: { $0.id == id }),
+              target.type == AccountStore.type(for: config.agent) else {
+            Log.log("switchAccount: '\(id)' missing or wrong type for \(config.agent.rawValue)")
+            return
+        }
+        Log.log("switching account -> \(id) (\(reason))")
+        config.setAccount(id)
+        overlay.showMessage("Switching to account \(id)…")
+        handleCtrlR()   // kill + respawn resuming the same session; makeSession picks up the account
+        if nudge { bus?.enqueue("You were moved to subscription account \(id) because \(reason). " +
+                     "Continue the task you were working on from where you left off.") }
+    }
+
     private func spawnSession(cols: Int, rows: Int) {
-        session = ClaudeSession(
-            projectPath: projectPath,
-            cols: max(cols, 10),
-            rows: max(rows, 5),
-            mode: sessionMode,
-            agent: config.agent,
-            model: config.agentModel,
-            remoteControl: remoteControlEnabled,
-            remoteName: config.projectName
-        )
+        session = makeSession(cols: max(cols, 10), rows: max(rows, 5), mode: sessionMode,
+                              agent: config.agent, model: config.agentModel)
         session.onData = { [weak self] data in
             self?.handleSessionData(data)
         }
@@ -961,7 +1034,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             agent: config.agent.rawValue,
             model: config.agentModel,
             branch: statusBarState.gitBranch,
-            lastCommand: lastCommand
+            lastCommand: lastCommand,
+            account: account?.id,
+            limitedUntil: limitedUntil
         )
         guard let msg = bus.tick(snap) else { return }
         recentScreen = ""
@@ -1118,6 +1193,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         if cmd["focus"] as? Bool == true {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+        }
+        if let id = cmd["account"] as? String {
+            switchAccount(to: id, reason: "of a manual switch", nudge: false)
         }
     }
 

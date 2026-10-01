@@ -5,7 +5,7 @@
   orch-sessions <filter>        names containing <filter> (e.g. a project name)
   orch-sessions --json [...]    machine-readable
 
-States: busy · idle · prompt (a dialog/question on screen needs a human) ·
+States: busy · idle · limited (its account hit a usage limit) · prompt (a dialog/question on screen needs a human) ·
 exited (window closed or agent quit — relaunch with `orch <path>` or
 orch-worker; listed for a day, or while it has undelivered messages) ·
 stale (the app stopped updating).
@@ -78,11 +78,12 @@ def main(argv):
     if not rows:
         print("no running sessions")
         return
-    hdr = ("NAME", "STATE", "IDLE", "AGENT", "BRANCH", "INBOX", "LAST")
+    hdr = ("NAME", "STATE", "IDLE", "AGENT", "ACCOUNT", "BRANCH", "INBOX", "LAST")
     table = [hdr] + [(
         s["name"], s.get("state", "?"),
         f'{s.get("idle_seconds", "?")}s' if s.get("state") == "idle" else "-",
         s.get("agent", "?") + (f'/{s["model"]}' if s.get("model") else ""),
+        s.get("account", "-") + (f' (until {s["limited_until"][11:16]}Z)' if s.get("limited_until") else ""),
         s.get("branch", "") or "-",
         str(s.get("inbox_pending", 0)),
         (s.get("last_command") or "")[:50],
