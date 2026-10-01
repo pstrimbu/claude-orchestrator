@@ -6,7 +6,9 @@
   orch-sessions --json [...]    machine-readable
 
 States: busy · idle · prompt (a dialog/question on screen needs a human) ·
-exited · stale (the app stopped updating).
+exited (window closed or agent quit — relaunch with `orch <path>` or
+orch-worker; listed for a day, or while it has undelivered messages) ·
+stale (the app stopped updating).
 
 Reads the registry (~/.config/orch/sessions/*.json) and each session's
 .orch/status.json. Entries whose process is gone (crash, kill -9) are pruned.
@@ -16,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REG = Path.home() / ".config/orch/sessions"
+KEEP_EXITED = 24 * 3600   # seconds a closed session stays listed
 
 
 def alive(pid):
@@ -33,7 +36,8 @@ def sessions():
             reg = json.loads(f.read_text())
         except (OSError, ValueError):
             continue
-        if not alive(reg.get("pid")):
+        path = Path(reg.get("path", ""))
+        if not (path / ".orch").is_dir():       # worktree removed
             f.unlink(missing_ok=True)
             continue
         st = {}
@@ -48,6 +52,16 @@ def sessions():
                 age = (datetime.now(timezone.utc) - t).total_seconds()
             except ValueError:
                 pass
+        if not alive(reg.get("pid")):
+            # Closed or crashed. Keep showing it while it has undelivered
+            # messages, or for a day, so a vanished worker is noticed.
+            pending = len([n for n in os.listdir(path / ".orch/inbox")
+                           if n.endswith((".md", ".txt"))]) if (path / ".orch/inbox").is_dir() else 0
+            if pending == 0 and (age is None or age > KEEP_EXITED):
+                f.unlink(missing_ok=True)
+                continue
+            out.append({**reg, **st, "state": "exited", "inbox_pending": pending})
+            continue
         # A status file that stopped updating means the app is hung, not idle.
         state = st.get("state", "unknown") if age is not None and age < 10 else "stale"
         out.append({**reg, **st, "state": state})

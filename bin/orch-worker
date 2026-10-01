@@ -53,6 +53,7 @@ if os.path.exists(p):
     json.dump(d, open(p, "w"), indent=2)
 PY
   notifyutil -p com.orch.reload-projects 2>/dev/null || true
+  rm -f "$HOME/.config/orch/sessions/$(basename "$wt").json"
   echo "removed $wt (branch $branch kept)"
   exit 0
 fi

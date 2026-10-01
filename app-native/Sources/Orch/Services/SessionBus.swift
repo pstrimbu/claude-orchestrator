@@ -110,8 +110,9 @@ final class SessionBus {
         moveToDelivered(file)
     }
 
+    /// The registry entry stays: a closed session with undelivered messages must
+    /// stay visible (orch-sessions shows it as exited, and ages it out).
     func shutdown() {
-        try? FileManager.default.removeItem(atPath: registryPath)
         writeJSON(["name": name, "path": projectPath, "state": "exited",
                    "updated_at": ISO8601DateFormatter().string(from: Date())], to: statusPath)
     }
