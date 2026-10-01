@@ -1,33 +1,39 @@
 #!/usr/bin/env bash
 # orch-worker — start a worker session in its own git worktree.
 #
-#   orch-worker <repo> <name> [--agent claude|codex|lmstudio] [--model M] [--base REF] [--no-launch]
-#   orch-worker rm <repo> <name>        remove the worktree (refuses if dirty)
+#   orch-worker <repo> <name> [--agent claude|codex|lmstudio] [--model M] [--base REF] [--branch B] [--no-launch]
+#   orch-worker stop <repo> <name>      close the session's window (worktree stays)
+#   orch-worker rm <repo> <name>        close it and remove the worktree — refuses
+#                                       if anything is uncommitted; the branch is
+#                                       always kept, so committed work survives
 #
 # Creates <parent>/<repo>-wt-<name> on branch wt/<name> (off --base, default the
 # repo's main — use the lead's goal branch when work integrates there), links the gitignored files a worker needs, pre-trusts the folder for
 # the agent CLI, writes the worktree's .orch/project.json (agent + model), and
 # launches orch there. Each worktree has its own .orch/, so sessions never
-# collide on pid/status/inbox files.
+# collide on pid/status/inbox files. --branch B uses branch B instead of
+# wt/<name> — e.g. reopening a lead on its goal branch after it was removed:
+#   orch-worker <repo> lead --branch loops/g1-mobile-itinerary
 #
 # Links: every path listed in <repo>/.loops/worker-links (or .orch/; one per line, relative
 # to the repo root) is symlinked from the main checkout into the worktree —
 # e.g. .env, frontend/node_modules. Default when the file is absent: .env.
 set -euo pipefail
 
-usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; exit 1; }
 
-remove=0
-if [ "${1:-}" = "rm" ]; then remove=1; shift; fi
+action=start
+case "${1:-}" in rm|stop) action="$1"; shift ;; esac
 [ $# -ge 2 ] || usage
 repo="$(cd "$1" && pwd)"; name="$2"; shift 2
 
-agent=claude; model=""; base=""; launch=1
+agent=claude; model=""; base=""; branch_opt=""; launch=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --agent) agent="$2"; shift 2 ;;
     --model) model="$2"; shift 2 ;;
     --base) base="$2"; shift 2 ;;
+    --branch) branch_opt="$2"; shift 2 ;;
     --no-launch) launch=0; shift ;;
     *) usage ;;
   esac
@@ -35,13 +41,37 @@ done
 case "$agent" in claude|codex|lmstudio) ;; *) echo "orch-worker: unknown agent '$agent'" >&2; exit 1 ;; esac
 
 wt="$(dirname "$repo")/$(basename "$repo")-wt-$name"
-branch="wt/$name"
+branch="${branch_opt:-wt/$name}"
 
-if [ $remove = 1 ]; then
+# Quit the session's orch app. SIGTERM takes the app's normal terminate path
+# (stops the agent, marks the session exited); escalate if it hangs.
+stop_window() {
+  local pidf="$wt/.orch/orch.pid" pid
+  [ -f "$pidf" ] || return 0
+  pid="$(cat "$pidf")"
+  kill -0 "$pid" 2>/dev/null || return 0
+  kill -TERM "$pid"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || return 0; sleep 1; done
+  kill -KILL "$pid" 2>/dev/null || true
+}
+
+if [ "$action" = stop ]; then
+  stop_window
+  echo "stopped $(basename "$wt") (worktree kept: $wt)"
+  exit 0
+fi
+
+if [ "$action" = rm ]; then
+  [ -d "$wt" ] || { echo "orch-worker: no worktree at $wt" >&2; exit 1; }
   if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null | grep -v '^?? .orch/')" ]; then
     echo "orch-worker: $wt has uncommitted changes; not removing" >&2
     exit 1
   fi
+  branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD)"
+  wbase="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("worker_base",""))' "$wt/.orch/project.json" 2>/dev/null || true)"
+  orch_pid="$(cat "$wt/.orch/orch.pid" 2>/dev/null || true)"
+  # Remove first, close the window last: when a session removes ITSELF, closing
+  # the window ends this script too, so it has to be the final step.
   git -C "$repo" worktree remove --force "$wt"
   # Drop it from the launcher sidebar (orch registers every path it opens).
   python3 - "$wt" <<'PY'
@@ -54,7 +84,17 @@ if os.path.exists(p):
 PY
   notifyutil -p com.orch.reload-projects 2>/dev/null || true
   rm -f "$HOME/.config/orch/sessions/$(basename "$wt").json"
-  echo "removed $wt (branch $branch kept)"
+  note=""
+  if [ -n "$wbase" ] && git -C "$repo" rev-parse --verify --quiet "$wbase" >/dev/null; then
+    n="$(git -C "$repo" rev-list --count "$wbase..$branch" 2>/dev/null || echo 0)"
+    [ "$n" -gt 0 ] && note=" — $n commit(s) not yet in $wbase"
+  fi
+  echo "removed $wt (branch $branch kept$note)"
+  if [ -n "$orch_pid" ] && kill -0 "$orch_pid" 2>/dev/null; then
+    kill -TERM "$orch_pid"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$orch_pid" 2>/dev/null || exit 0; sleep 1; done
+    kill -KILL "$orch_pid" 2>/dev/null || true
+  fi
   exit 0
 fi
 
@@ -121,11 +161,12 @@ else
 fi
 
 mkdir -p "$wt/.orch"
-python3 - "$wt/.orch/project.json" "$(basename "$repo")-$name" "$agent" "$model" <<'PY'
+python3 - "$wt/.orch/project.json" "$(basename "$repo")-$name" "$agent" "$model" "$base" <<'PY'
 import json, sys, os
-path, pid, agent, model = sys.argv[1:]
+path, pid, agent, model, base = sys.argv[1:]
 cfg = json.load(open(path)) if os.path.exists(path) else {}
 cfg.update({"project_id": pid, "agent": agent, "tracker": {"type": "none"}})
+if base: cfg["worker_base"] = base   # where its work integrates; rm reports unmerged commits
 if model: cfg["agent_model"] = model
 else: cfg.pop("agent_model", None)
 open(path, "w").write(json.dumps(cfg, indent=2) + "\n")

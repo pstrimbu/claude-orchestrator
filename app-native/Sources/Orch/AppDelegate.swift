@@ -56,6 +56,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     // Keep signal sources alive
     private var sigUsr1Source: DispatchSourceSignal?
     private var sigUsr2Source: DispatchSourceSignal?
+    private var sigTermSource: DispatchSourceSignal?
 
     // App Nap opt-out — keeps SwiftTerm redrawing in real time when window
     // is not frontmost. Without this, macOS throttles the view's draw loop
@@ -200,6 +201,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         src2.setEventHandler { [weak self] in self?.handleWindowCommand() }
         src2.resume()
         sigUsr2Source = src2
+
+        // SIGTERM — quit cleanly (orch-worker stop/rm): the normal terminate
+        // path stops the agent and marks the session exited, instead of the
+        // process just dying.
+        signal(SIGTERM, SIG_IGN)
+        let srcTerm = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        srcTerm.setEventHandler { NSApp.terminate(nil) }
+        srcTerm.resume()
+        sigTermSource = srcTerm
 
         // Replay saved scrollback
         replayScrollback()
