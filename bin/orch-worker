@@ -81,6 +81,18 @@ while IFS= read -r p; do
   echo "linked $p"
 done <<< "$paths"
 
+# A .gitignore pattern like `node_modules/` matches directories only, not the
+# symlink that stands in for one — so `git add -A` in the worker would commit
+# it. Exclude every linked path locally (info/exclude is shared by worktrees).
+exclude="$(git -C "$repo" rev-parse --git-common-dir)"
+case "$exclude" in /*) ;; *) exclude="$repo/$exclude" ;; esac
+exclude="$exclude/info/exclude"
+mkdir -p "$(dirname "$exclude")"; touch "$exclude"
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  grep -qxF "/$p" "$exclude" || echo "/$p" >> "$exclude"
+done <<< "$paths"
+
 # Pre-trust the folder so a trust prompt can't swallow the first inbox message.
 # Claude's prompt defaults to "No, exit", and trust is NOT inherited from a
 # trusted parent (verified 2026-10-01), so every worktree needs its own entry.
