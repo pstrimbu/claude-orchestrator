@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # orch-worker — start a worker session in its own git worktree.
 #
-#   orch-worker <repo> <name> [--agent claude|codex|lmstudio] [--model M] [--base REF] [--branch B] [--account ID] [--no-launch]
+#   orch-worker <repo> <name> [--agent claude|codex|lmstudio] [--model M] [--base REF] [--branch B] [--account ID] [--role worker|lead] [--lead SESSION] [--no-launch]
 #   orch-worker stop <repo> <name>      close the session's window (worktree stays)
 #   orch-worker rm <repo> <name>        close it and remove the worktree — refuses
 #                                       if anything is uncommitted; the branch is
@@ -15,6 +15,9 @@
 # wt/<name> — e.g. reopening a lead on its goal branch after it was removed:
 #   orch-worker <repo> lead --branch loops/g1-mobile-itinerary
 # --account ID runs it on that subscription account (orch-account list).
+# Every session is registered with the Loops portal (role, lead, agent,
+# account; project from the repo) — role defaults to lead for the name "lead",
+# worker otherwise, with --lead defaulting to <repo>-wt-lead.
 #
 # Links: every path listed in <repo>/.loops/worker-links (or .orch/; one per line, relative
 # to the repo root) is symlinked from the main checkout into the worktree —
@@ -28,7 +31,7 @@ case "${1:-}" in rm|stop) action="$1"; shift ;; esac
 [ $# -ge 2 ] || usage
 repo="$(cd "$1" && pwd)"; name="$2"; shift 2
 
-agent=claude; model=""; base=""; branch_opt=""; account=""; launch=1
+agent=claude; model=""; base=""; branch_opt=""; account=""; role=""; lead=""; launch=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --agent) agent="$2"; shift 2 ;;
@@ -36,6 +39,8 @@ while [ $# -gt 0 ]; do
     --base) base="$2"; shift 2 ;;
     --branch) branch_opt="$2"; shift 2 ;;
     --account) account="$2"; shift 2 ;;
+    --role) role="$2"; shift 2 ;;
+    --lead) lead="$2"; shift 2 ;;
     --no-launch) launch=0; shift ;;
     *) usage ;;
   esac
@@ -182,6 +187,21 @@ open(path, "w").write(json.dumps(cfg, indent=2) + "\n")
 PY
 
 echo "worker $name: $wt ($branch, $agent${model:+/$model})"
+
+# Register with the Loops portal so its role and identity don't rest on a
+# folder name (SPEC §4.5). Non-fatal: orch works without the portal.
+loops_cli="$HOME/dev/loops-portal/bin/loops"
+if [ -x "$loops_cli" ]; then
+  [ -n "$role" ] || { [ "$name" = lead ] && role=lead || role=worker; }
+  [ -n "$lead" ] || [ "$role" = lead ] || lead="$(basename "$repo")-wt-lead"
+  if ! LOOPS_ACTOR=orch-worker "$loops_cli" session register --name "$(basename "$wt")" --path "$wt" \
+       --repo "$repo" --role "$role" --agent "${agent/lmstudio/codex}" \
+       ${lead:+--lead "$lead"} ${account:+--account "$account"} >/dev/null; then
+    echo "warning: couldn't register $(basename "$wt") with the Loops portal (is the API up?)" >&2
+  else
+    echo "registered with loops as $role${lead:+ (lead $lead)}"
+  fi
+fi
 if [ $launch = 1 ]; then
   # One window per worktree: two would share .orch/ (status, inbox, pid).
   # A window whose agent is still running gets focused instead; one whose
