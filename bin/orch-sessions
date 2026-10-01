@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""orch-sessions — list running orch sessions and their live state.
+
+  orch-sessions                 all sessions
+  orch-sessions <filter>        names containing <filter> (e.g. a project name)
+  orch-sessions --json [...]    machine-readable
+
+States: busy · idle · prompt (a dialog/question on screen needs a human) ·
+exited · stale (the app stopped updating).
+
+Reads the registry (~/.config/orch/sessions/*.json) and each session's
+.orch/status.json. Entries whose process is gone (crash, kill -9) are pruned.
+"""
+import json, os, sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+REG = Path.home() / ".config/orch/sessions"
+
+
+def alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def sessions():
+    out = []
+    for f in sorted(REG.glob("*.json")) if REG.exists() else []:
+        try:
+            reg = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if not alive(reg.get("pid")):
+            f.unlink(missing_ok=True)
+            continue
+        st = {}
+        try:
+            st = json.loads((Path(reg["path"]) / ".orch/status.json").read_text())
+        except (OSError, ValueError, KeyError):
+            pass
+        age = None
+        if st.get("updated_at"):
+            try:
+                t = datetime.fromisoformat(st["updated_at"].replace("Z", "+00:00"))
+                age = (datetime.now(timezone.utc) - t).total_seconds()
+            except ValueError:
+                pass
+        # A status file that stopped updating means the app is hung, not idle.
+        state = st.get("state", "unknown") if age is not None and age < 10 else "stale"
+        out.append({**reg, **st, "state": state})
+    return out
+
+
+def main(argv):
+    as_json = "--json" in argv
+    filt = next((a for a in argv if not a.startswith("-")), None)
+    rows = [s for s in sessions() if not filt or filt in s["name"]]
+    if as_json:
+        print(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        print("no running sessions")
+        return
+    hdr = ("NAME", "STATE", "IDLE", "AGENT", "BRANCH", "INBOX", "LAST")
+    table = [hdr] + [(
+        s["name"], s.get("state", "?"),
+        f'{s.get("idle_seconds", "?")}s' if s.get("state") == "idle" else "-",
+        s.get("agent", "?") + (f'/{s["model"]}' if s.get("model") else ""),
+        s.get("branch", "") or "-",
+        str(s.get("inbox_pending", 0)),
+        (s.get("last_command") or "")[:50],
+    ) for s in rows]
+    w = [max(len(r[i]) for r in table) for i in range(len(hdr))]
+    for r in table:
+        print("  ".join(c.ljust(w[i]) for i, c in enumerate(r)).rstrip())
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

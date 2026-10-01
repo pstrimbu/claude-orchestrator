@@ -24,6 +24,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     private var tracker: TrackerService!
     private var history: CommandHistoryService!
     private var sessionStore: SessionStore!
+    private var bus: SessionBus!
+    /// Letters-only tail of recent PTY output, for spotting a blocking prompt.
+    private var recentScreen = ""
     private var overlay = OverlayManager()
     private var statusBarState = StatusBarState()
     private var statusBarModel = StatusBarModel()
@@ -92,6 +95,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         tracker = createTracker(config: config)
         history = CommandHistoryService(orchDir: config.orchDir)
         sessionStore = SessionStore(projectPath: projectPath)
+        bus = SessionBus(projectPath: projectPath, orchDir: config.orchDir)
 
         // Wire up Clockify summary provider
         clockify.setSummaryProvider { [weak self] in
@@ -170,7 +174,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         // `/compact` that happens mid-interaction.
         pollGitInfo()
         sendStatusUpdate()
-        statusTimer = scheduleCommon(every: 1.0) { [weak self] in self?.sendStatusUpdate() }
+        statusTimer = scheduleCommon(every: 1.0) { [weak self] in
+            self?.sendStatusUpdate()
+            self?.pollInbox()
+        }
         gitPollTimer = scheduleCommon(every: 10.0) { [weak self] in self?.pollGitInfo() }
         pollSessionSize()
         sizePollTimer = scheduleCommon(every: 2.0) { [weak self] in self?.pollSessionSize() }
@@ -322,6 +329,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         // A submitted (non-empty) command re-arms it below.
         awaitingResponse = false
         lastUserInputTime = Date()
+        recentScreen = ""   // a human answered whatever was on screen
 
         // Track user input to capture last command
         if let str = String(bytes: bytes, encoding: .utf8) {
@@ -598,6 +606,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         if !bytes.isEmpty {
             appendScrollback(bytes)
             lastPtyOutputTime = Date()
+            if let str = String(bytes: bytes, encoding: .utf8) {
+                recentScreen = String((recentScreen + SessionBus.letters(str)).suffix(4000))
+            }
             if awaitingResponse { responseBytes += bytes.count }
 
             // Save absolute viewport row before feed so we can restore it if
@@ -927,6 +938,46 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         )
     }
 
+    // MARK: - Inbox (SessionBus)
+
+    private func pollInbox() {
+        guard let bus = bus else { return }
+        let snap = SessionBus.Snapshot(
+            running: session?.running ?? false,
+            ptyQuiet: Date().timeIntervalSince(lastPtyOutputTime),
+            humanQuiet: Date().timeIntervalSince(lastUserInputTime),
+            inputPending: !inputBuffer.isEmpty,
+            blockingPrompt: SessionBus.showsBlockingPrompt(recentScreen),
+            agent: config.agent.rawValue,
+            model: config.agentModel,
+            branch: statusBarState.gitBranch,
+            lastCommand: lastCommand
+        )
+        guard let msg = bus.tick(snap) else { return }
+        recentScreen = ""
+        deliverInboxMessage(msg.text)
+        bus.delivered(msg.file)
+    }
+
+    /// Type an inbox message into the agent as if the user had pasted it and hit
+    /// Enter. Bracketed paste keeps multi-line text as one prompt in both CLIs;
+    /// the Enter goes separately, after the CLI has absorbed the paste.
+    private func deliverInboxMessage(_ text: String) {
+        Log.log("inbox: delivering \(text.count) chars")
+        let firstLine = text.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? text
+        lastCommand = "[inbox] " + firstLine
+        history.append(lastCommand, session: resolveSessionId())
+        session?.write("\u{1b}[200~" + text + "\u{1b}[201~")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self = self else { return }
+            self.session?.write("\r")
+            // Same arming as a typed submit, so "your turn" fires on completion.
+            self.awaitingResponse = true
+            self.responseBytes = 0
+            self.flashedThisResponse = false
+        }
+    }
+
     // MARK: - Sections
 
     private func openSection(_ section: String) {
@@ -1107,6 +1158,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         sizePollTimer?.invalidate()
         clockify?.destroy()
         session?.kill()
+        bus?.shutdown()
         try? FileManager.default.removeItem(atPath: config.orchDir + "/orch.pid")
     }
 

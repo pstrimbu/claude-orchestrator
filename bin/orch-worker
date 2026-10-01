@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# orch-worker — start a worker session in its own git worktree.
+#
+#   orch-worker <repo> <name> [--agent claude|codex|lmstudio] [--model M] [--no-launch]
+#   orch-worker rm <repo> <name>        remove the worktree (refuses if dirty)
+#
+# Creates <parent>/<repo>-wt-<name> on branch wt/<name> (off the repo's current
+# main), links the gitignored files a worker needs, pre-trusts the folder for
+# the agent CLI, writes the worktree's .orch/project.json (agent + model), and
+# launches orch there. Each worktree has its own .orch/, so sessions never
+# collide on pid/status/inbox files.
+#
+# Links: every path listed in <repo>/.loops/worker-links (or .orch/; one per line, relative
+# to the repo root) is symlinked from the main checkout into the worktree —
+# e.g. .env, frontend/node_modules. Default when the file is absent: .env.
+set -euo pipefail
+
+usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+
+remove=0
+if [ "${1:-}" = "rm" ]; then remove=1; shift; fi
+[ $# -ge 2 ] || usage
+repo="$(cd "$1" && pwd)"; name="$2"; shift 2
+
+agent=claude; model=""; launch=1
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --agent) agent="$2"; shift 2 ;;
+    --model) model="$2"; shift 2 ;;
+    --no-launch) launch=0; shift ;;
+    *) usage ;;
+  esac
+done
+case "$agent" in claude|codex|lmstudio) ;; *) echo "orch-worker: unknown agent '$agent'" >&2; exit 1 ;; esac
+
+wt="$(dirname "$repo")/$(basename "$repo")-wt-$name"
+branch="wt/$name"
+
+if [ $remove = 1 ]; then
+  if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null | grep -v '^?? .orch/')" ]; then
+    echo "orch-worker: $wt has uncommitted changes; not removing" >&2
+    exit 1
+  fi
+  git -C "$repo" worktree remove --force "$wt"
+  # Drop it from the launcher sidebar (orch registers every path it opens).
+  python3 - "$wt" <<'PY'
+import json, os, sys
+p = os.path.expanduser("~/.config/orch/launcher-projects.json")
+if os.path.exists(p):
+    d = json.load(open(p))
+    d["projects"] = [x for x in d.get("projects", []) if x.get("path") != sys.argv[1]]
+    json.dump(d, open(p, "w"), indent=2)
+PY
+  notifyutil -p com.orch.reload-projects 2>/dev/null || true
+  echo "removed $wt (branch $branch kept)"
+  exit 0
+fi
+
+if [ ! -d "$wt" ]; then
+  base="$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
+  base="${base:-main}"
+  if git -C "$repo" show-ref --quiet "refs/heads/$branch"; then
+    git -C "$repo" worktree add "$wt" "$branch"
+  else
+    git -C "$repo" worktree add -b "$branch" "$wt" "$base"
+  fi
+fi
+
+# Gitignored files the worker needs, linked (not copied) so they stay in sync.
+links="$repo/.loops/worker-links"
+[ -f "$links" ] || links="$repo/.orch/worker-links"
+if [ -f "$links" ]; then paths="$(grep -v '^\s*#' "$links" | sed '/^\s*$/d')"; else paths=".env"; fi
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  [ -e "$repo/$p" ] || continue
+  [ -e "$wt/$p" ] || [ -L "$wt/$p" ] && continue
+  mkdir -p "$(dirname "$wt/$p")"
+  ln -s "$repo/$p" "$wt/$p"
+  echo "linked $p"
+done <<< "$paths"
+
+# Pre-trust the folder so a trust prompt can't swallow the first inbox message.
+# Claude's prompt defaults to "No, exit", and trust is NOT inherited from a
+# trusted parent (verified 2026-10-01), so every worktree needs its own entry.
+if [ "$agent" = claude ]; then
+  python3 - "$wt" <<'PY'
+import json, os, sys, tempfile
+path, wt = os.path.expanduser("~/.claude.json"), sys.argv[1]
+with open(path) as f:
+    cfg = json.load(f)
+entry = cfg.setdefault("projects", {}).setdefault(wt, {})
+if not entry.get("hasTrustDialogAccepted"):
+    entry["hasTrustDialogAccepted"] = True
+    # Atomic replace; running Claude sessions rewrite this file too.
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".claude.json.")
+    with os.fdopen(fd, "w") as f:
+        json.dump(cfg, f, indent=2)
+    os.chmod(tmp, os.stat(path).st_mode & 0o777)
+    os.replace(tmp, path)
+PY
+else
+  cfg="$HOME/.codex/config.toml"
+  if ! grep -qF "[projects.\"$wt\"]" "$cfg" 2>/dev/null; then
+    printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$wt" >> "$cfg"
+  fi
+fi
+
+mkdir -p "$wt/.orch"
+python3 - "$wt/.orch/project.json" "$(basename "$repo")-$name" "$agent" "$model" <<'PY'
+import json, sys, os
+path, pid, agent, model = sys.argv[1:]
+cfg = json.load(open(path)) if os.path.exists(path) else {}
+cfg.update({"project_id": pid, "agent": agent, "tracker": {"type": "none"}})
+if model: cfg["agent_model"] = model
+else: cfg.pop("agent_model", None)
+open(path, "w").write(json.dumps(cfg, indent=2) + "\n")
+PY
+
+echo "worker $name: $wt ($branch, $agent${model:+/$model})"
+if [ $launch = 1 ]; then
+  exec "$(dirname "$0")/orch" "$wt"
+fi

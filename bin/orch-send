@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# orch-send — queue a message for a running orch session.
+#
+#   orch-send <session> "message text"
+#   orch-send <session> - < prompt.md        (read the message from stdin)
+#
+# <session> is a session name from `orch-sessions` (the checkout's directory
+# name, e.g. crm.travelminds.com or crm.travelminds.com-wt-w1) or a path.
+#
+# The message lands in <path>/.orch/inbox/ and the session types it in as a
+# prompt the next time the agent is idle and you aren't typing (see
+# app-native/Sources/Orch/Services/SessionBus.swift). Messages queue in order;
+# delivered ones move to .orch/inbox/delivered/.
+set -euo pipefail
+
+if [ $# -lt 2 ]; then
+  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+  exit 1
+fi
+
+target="$1"; shift
+if [ -d "$target" ]; then
+  path="$(cd "$target" && pwd)"
+else
+  reg="$HOME/.config/orch/sessions/$target.json"
+  if [ ! -f "$reg" ]; then
+    echo "orch-send: no session named '$target' (see orch-sessions)" >&2
+    exit 1
+  fi
+  path="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["path"])' "$reg")"
+fi
+
+if [ "$1" = "-" ]; then msg="$(cat)"; else msg="$*"; fi
+if [ -z "${msg//[[:space:]]/}" ]; then
+  echo "orch-send: empty message" >&2
+  exit 1
+fi
+
+inbox="$path/.orch/inbox"
+mkdir -p "$inbox"
+# Sortable, collision-free name; write to .tmp then rename so the session never
+# reads a half-written file.
+name="$(date +%Y%m%d-%H%M%S)-$$-$RANDOM.md"
+printf '%s\n' "$msg" > "$inbox/$name.tmp"
+mv "$inbox/$name.tmp" "$inbox/$name"
+echo "queued for $(basename "$path"): $inbox/$name"

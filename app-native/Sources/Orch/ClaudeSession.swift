@@ -113,6 +113,9 @@ class ClaudeSession {
             setenv("COLUMNS", String(cols), 1)
             setenv("LINES", String(rows), 1)
             unsetenv("ANTHROPIC_API_KEY")
+            // Same for Codex: an OPENAI_API_KEY in a loaded .env would bill the
+            // API instead of the ChatGPT subscription the CLI is logged in with.
+            unsetenv("OPENAI_API_KEY")
 
             // exec the agent CLI
             let cArgs = [binaryPath] + args

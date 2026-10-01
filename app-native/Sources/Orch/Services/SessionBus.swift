@@ -1,0 +1,159 @@
+import Foundation
+
+/// File-based coordination surface for running sessions, so a lead session, a
+/// script, or the user can drive any session the same way regardless of which
+/// agent CLI it runs.
+///
+///   .orch/status.json      — this session's live state (busy/idle, branch, inbox depth)
+///   .orch/inbox/*.md       — messages to type into the session, oldest name first
+///   .orch/inbox/delivered/ — consumed messages, kept for diagnosis
+///   ~/.config/orch/sessions/<name>.json — registry entry {name, path, pid}
+///
+/// Delivery only happens when the agent is sitting at its prompt and the human
+/// isn't typing: the PTY has been quiet, no recent keystrokes, nothing half-typed,
+/// and the previous delivery has produced output and gone quiet again.
+final class SessionBus {
+    let name: String
+    let projectPath: String
+    private let orchDir: String
+    private let inboxDir: String
+    private let deliveredDir: String
+    private let statusPath: String
+    private let registryPath: String
+
+    /// Quiet PTY time before the agent counts as idle. Both CLIs animate a spinner
+    /// while working, so sustained silence means "waiting at the prompt".
+    static let idleQuiet: TimeInterval = 5
+    /// Don't type over a human: hold delivery this long after their last keystroke.
+    static let humanQuiet: TimeInterval = 15
+
+    private var lastDeliveredAt: Date?
+
+    init(projectPath: String, orchDir: String) {
+        self.projectPath = projectPath
+        self.name = (projectPath as NSString).lastPathComponent
+        self.orchDir = orchDir
+        self.inboxDir = orchDir + "/inbox"
+        self.deliveredDir = orchDir + "/inbox/delivered"
+        self.statusPath = orchDir + "/status.json"
+        let sessionsDir = NSHomeDirectory() + "/.config/orch/sessions"
+        self.registryPath = sessionsDir + "/\(name).json"
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: deliveredDir, withIntermediateDirectories: true)
+        try? fm.createDirectory(atPath: sessionsDir, withIntermediateDirectories: true)
+        writeJSON(["name": name, "path": projectPath,
+                   "pid": Int(ProcessInfo.processInfo.processIdentifier)], to: registryPath)
+    }
+
+    struct Snapshot {
+        var running: Bool
+        var ptyQuiet: TimeInterval
+        var humanQuiet: TimeInterval
+        var inputPending: Bool       // the human has something half-typed
+        var blockingPrompt: Bool     // a trust/confirm dialog is on screen
+        var agent: String
+        var model: String?
+        var branch: String?
+        var lastCommand: String
+    }
+
+    /// Called once a second from the status timer. Returns a message to deliver,
+    /// if the session is ready for one; the caller types it and calls `delivered`.
+    func tick(_ s: Snapshot) -> (text: String, file: String)? {
+        let idle = s.running && s.ptyQuiet >= Self.idleQuiet
+        let pending = inboxFiles()
+        // A dialog on screen (trust prompt, a question the agent asked) reads as
+        // quiet, but nobody else can answer it: report it as its own state.
+        let state = !s.running ? "exited" : (idle ? (s.blockingPrompt ? "prompt" : "idle") : "busy")
+        writeStatus(s, state: state, pending: pending.count)
+
+        guard idle, !s.inputPending, !s.blockingPrompt, s.humanQuiet >= Self.humanQuiet,
+              let next = pending.first else { return nil }
+        // The previous message must have been answered: output resumed after the
+        // delivery and has since gone quiet (ptyQuiet is measured from that output).
+        if let at = lastDeliveredAt, Date().timeIntervalSince(at) <= s.ptyQuiet { return nil }
+        guard let text = try? String(contentsOfFile: inboxDir + "/" + next, encoding: .utf8),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            moveToDelivered(next)   // empty or unreadable: don't wedge the queue
+            return nil
+        }
+        return (text.trimmingCharacters(in: .whitespacesAndNewlines), next)
+    }
+
+    /// Startup dialogs where an injected Enter picks the default — Claude's
+    /// folder-trust prompt defaults to "No, exit". Never deliver into one; the
+    /// message waits until a human answers it.
+    static func showsBlockingPrompt(_ lettersTail: String) -> Bool {
+        let markers = ["trustthisfolder", "trustthecontents", "noexit", "entertoconfirm"]
+        let tail = String(lettersTail.suffix(1500))
+        return markers.contains { tail.contains($0) }
+    }
+
+    /// Lowercased letters only: TUIs position words with cursor moves rather
+    /// than spaces, so this is the stable form to match prompt text against.
+    static func letters(_ s: String) -> String {
+        var out = ""
+        var inEscape = false
+        for ch in s.unicodeScalars {
+            if inEscape {
+                if (ch.value >= 0x40 && ch.value <= 0x7e) && ch != "[" { inEscape = false }
+                continue
+            }
+            if ch == "\u{1b}" { inEscape = true; continue }
+            if CharacterSet.letters.contains(ch) { out.unicodeScalars.append(ch) }
+        }
+        return out.lowercased()
+    }
+
+    func delivered(_ file: String) {
+        lastDeliveredAt = Date()
+        moveToDelivered(file)
+    }
+
+    func shutdown() {
+        try? FileManager.default.removeItem(atPath: registryPath)
+        writeJSON(["name": name, "path": projectPath, "state": "exited",
+                   "updated_at": ISO8601DateFormatter().string(from: Date())], to: statusPath)
+    }
+
+    // MARK: - Files
+
+    /// Pending messages, oldest first. Writers drop `*.tmp` and rename, so only
+    /// complete `.md`/`.txt` files are picked up.
+    private func inboxFiles() -> [String] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: inboxDir)) ?? []
+        return names.filter { $0.hasSuffix(".md") || $0.hasSuffix(".txt") }.sorted()
+    }
+
+    private func moveToDelivered(_ file: String) {
+        let stamp = Int(Date().timeIntervalSince1970)
+        try? FileManager.default.moveItem(atPath: inboxDir + "/" + file,
+                                          toPath: deliveredDir + "/\(stamp)-\(file)")
+    }
+
+    private func writeStatus(_ s: Snapshot, state: String, pending: Int) {
+        var obj: [String: Any] = [
+            "name": name,
+            "path": projectPath,
+            "pid": Int(ProcessInfo.processInfo.processIdentifier),
+            "agent": s.agent,
+            "state": state,
+            "idle_seconds": Int(s.ptyQuiet.isFinite ? s.ptyQuiet : -1),
+            "inbox_pending": pending,
+            "last_command": String(s.lastCommand.prefix(200)),
+        ]
+        if let m = s.model { obj["model"] = m }
+        if let b = s.branch { obj["branch"] = b }
+        obj["updated_at"] = ISO8601DateFormatter().string(from: Date())
+        writeJSON(obj, to: statusPath)
+    }
+
+    private func writeJSON(_ obj: [String: Any], to path: String) {
+        guard let data = try? JSONSerialization.data(withJSONObject: obj,
+                                                     options: [.prettyPrinted, .sortedKeys]) else { return }
+        let tmp = path + ".tmp"
+        if FileManager.default.createFile(atPath: tmp, contents: data) {
+            _ = rename(tmp, path)
+        }
+    }
+}
