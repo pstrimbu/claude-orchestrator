@@ -22,6 +22,19 @@ class ClaudeSession {
     private(set) var rows: Int
     private(set) var lastActivity = Date()
     var masterFd: Int32 = -1
+    /// Per-spawn flags shared with that spawn's reader thread, so a kill()
+    /// followed by a fresh spawn() can't confuse the old reader with the new one.
+    private var current: SpawnState?
+
+    private final class SpawnState {
+        private let lock = NSLock()
+        private var _stopped = false
+        private var _reaped = false
+        var stopped: Bool { lock.lock(); defer { lock.unlock() }; return _stopped }
+        var reaped: Bool { lock.lock(); defer { lock.unlock() }; return _reaped }
+        func stop() { lock.lock(); _stopped = true; lock.unlock() }
+        func reap() { lock.lock(); _reaped = true; lock.unlock() }
+    }
 
     // Serial queue for PTY writes. Writing to the PTY master on the main thread
     // can block when claude isn't draining stdin fast enough (busy tool call,
@@ -145,8 +158,11 @@ class ClaudeSession {
 
         let handle = FileHandle(fileDescriptor: masterFdVar, closeOnDealloc: false)
         self.fileHandle = handle
+        let state = SpawnState()
+        self.current = state
 
-        // Read in background
+        // Read in background. This thread owns the master fd and is the only
+        // place it is closed — see kill().
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
             let bufferSize = 16384
             let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
@@ -164,14 +180,17 @@ class ClaudeSession {
             }
 
             // Wait for child
+            close(masterFdVar)
             var status: Int32 = 0
             waitpid(pid, &status, 0)
+            state.reap()
             let exitCode: Int32 = (status & 0x7f) == 0 ? (status >> 8) & 0xff : -1
 
             DispatchQueue.main.async {
-                guard let self = self else { return }
+                // A deliberate kill() (restart, agent switch) is not an exit to
+                // report or retry — the replacement session is already running.
+                guard let self = self, !state.stopped else { return }
                 self.running = false
-                close(masterFdVar)
 
                 // If --resume failed (e.g. the id no longer resolves), fall back to
                 // --continue rather than stranding the window.
@@ -234,15 +253,30 @@ class ClaudeSession {
         Int(Date().timeIntervalSince(lastActivity))
     }
 
+    /// Stop the agent without ever blocking the caller (the main thread).
+    ///
+    /// Never close the master fd here: the reader thread is blocked in read() on
+    /// it, and on macOS close() on a pty master under a blocked read hangs in the
+    /// kernel until the slave side goes quiet-and-closed. An idle agent that
+    /// outlives SIGTERM (Codex sitting at its prompt) left the whole app stuck in
+    /// uninterruptible wait — the frozen-window-on-agent-switch bug (2026-10-03).
+    /// Instead signal the whole process group (forkpty makes the child its
+    /// leader, so tool subprocesses holding the slave go too), escalate to
+    /// SIGKILL, and let the reader close the fd once read() returns.
     func kill() {
         guard childPid > 0 else { return }
+        let pid = childPid
+        let state = current
+        state?.stop()
         running = false
-        Foundation.kill(childPid, SIGTERM)
-        if masterFd >= 0 {
-            close(masterFd)
-            masterFd = -1
-        }
+        masterFd = -1
         childPid = 0
+        Foundation.kill(-pid, SIGTERM)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+            // Until the reader reaps it, the group leader is a zombie at worst,
+            // so the pgid can't have been reused yet.
+            if state?.reaped == false { Foundation.kill(-pid, SIGKILL) }
+        }
     }
 
     /// Claude Code launch args (session-id minting, --continue/--resume, remote
