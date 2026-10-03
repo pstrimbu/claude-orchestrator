@@ -272,7 +272,7 @@ class ClaudeSession {
         masterFd = -1
         childPid = 0
         Foundation.kill(-pid, SIGTERM)
-        DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
             // Until the reader reaps it, the group leader is a zombie at worst,
             // so the pgid can't have been reused yet.
             if state?.reaped == false { Foundation.kill(-pid, SIGKILL) }
