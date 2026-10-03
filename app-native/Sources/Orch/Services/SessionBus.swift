@@ -70,14 +70,22 @@ final class SessionBus {
         let state = !s.running ? "exited"
             : limited ? "limited"
             : (idle ? (s.blockingPrompt ? "prompt" : "idle") : "busy")
-        writeStatus(s, state: state, pending: pending.count)
-
-        // A limited session can't act on a message; hold it for after the switch/reset.
-        guard idle, !limited, !s.inputPending, !s.blockingPrompt, s.humanQuiet >= Self.humanQuiet,
-              let next = pending.first else { return nil }
-        // The previous message must have been answered: output resumed after the
-        // delivery and has since gone quiet (ptyQuiet is measured from that output).
-        if let at = lastDeliveredAt, Date().timeIntervalSince(at) <= s.ptyQuiet { return nil }
+        // Why a pending message isn't being typed in — shown in status.json so a
+        // stuck inbox is diagnosable from outside.
+        var hold: String? = nil
+        if !pending.isEmpty {
+            if !s.running { hold = "session not running" }
+            else if limited { hold = "account limited" }
+            else if !idle { hold = "agent busy" }
+            else if s.blockingPrompt { hold = "prompt on screen" }
+            else if s.inputPending { hold = "text typed but not sent" }
+            else if s.humanQuiet < Self.humanQuiet { hold = "you typed recently" }
+            else if let at = lastDeliveredAt, Date().timeIntervalSince(at) <= s.ptyQuiet {
+                hold = "waiting for a reply to the last message"
+            }
+        }
+        writeStatus(s, state: state, pending: pending.count, hold: hold)
+        guard hold == nil, let next = pending.first else { return nil }
         guard let text = try? String(contentsOfFile: inboxDir + "/" + next, encoding: .utf8),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             moveToDelivered(next)   // empty or unreadable: don't wedge the queue
@@ -164,7 +172,7 @@ final class SessionBus {
                                           toPath: deliveredDir + "/\(stamp)-\(file)")
     }
 
-    private func writeStatus(_ s: Snapshot, state: String, pending: Int) {
+    private func writeStatus(_ s: Snapshot, state: String, pending: Int, hold: String? = nil) {
         var obj: [String: Any] = [
             "name": name,
             "path": projectPath,
@@ -178,6 +186,7 @@ final class SessionBus {
         if let m = s.model { obj["model"] = m }
         if let b = s.branch { obj["branch"] = b }
         if let a = s.account { obj["account"] = a }
+        if let h = hold { obj["inbox_hold"] = h }
         if let u = s.limitedUntil, u > Date() {
             obj["limited_until"] = ISO8601DateFormatter().string(from: u)
         }
