@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# orch-lib.sh — Shared library for claude-orchestrator scripts
+# orch-lib.sh — Shared library for orchestrator scripts
 # Source this file, do not execute it directly.
 
 ORCH_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

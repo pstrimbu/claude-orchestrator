@@ -18,7 +18,7 @@ At the start of each goal/run, create ONE parent issue:
 orch-linear parent create --run-id "$(date +%Y%m%d-%H%M%S)" --title "Description of goal" --body-file /path/to/body.md
 ```
 
-Use templates at `~/dev/claude-orchestrator/templates/linear-parent.md` for body format.
+Use templates at `~/dev/orchestrator/templates/linear-parent.md` for body format.
 
 ### 2. Create subtasks
 
@@ -28,7 +28,7 @@ Break the parent into subtasks (max ~10; group if more):
 orch-linear subtask create --parent-id <PARENT_ISSUE_ID> --title "Subtask description" --body-file /path/to/body.md --run-id <RUN_ID>
 ```
 
-Use templates at `~/dev/claude-orchestrator/templates/linear-subtask.md` for body format.
+Use templates at `~/dev/orchestrator/templates/linear-subtask.md` for body format.
 
 ### 3. Status transitions
 

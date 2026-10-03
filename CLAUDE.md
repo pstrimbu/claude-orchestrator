@@ -1,6 +1,6 @@
-# Claude Orchestrator
+# Orchestrator
 
-Native macOS (Swift/AppKit) app for running Claude Code sessions with integrated time tracking, issue management, and git integration. Uses SwiftTerm for terminal emulation.
+Native macOS (Swift/AppKit) app for running AI coding-agent sessions (Claude Code, Codex) with integrated time tracking, issue management, and git integration. Uses SwiftTerm for terminal emulation.
 
 ## Quick Start
 

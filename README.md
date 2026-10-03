@@ -1,4 +1,4 @@
-# Claude Orchestrator
+# Orchestrator
 
 A native macOS app for running many Claude Code sessions across many projects without
 losing track of which is which.
