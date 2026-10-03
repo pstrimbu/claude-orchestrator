@@ -289,7 +289,9 @@ class ClaudeSession {
         // home (wrong for per-account CODEX_HOME), and when it is unavailable
         // Codex 0.159 asks at startup with "Cancel" preselected — an injected
         // Enter then quit the session (2026-10-01).
-        var flags = ["--dangerously-bypass-approvals-and-sandbox", "--no-daemon"]
+        // --no-alt-screen: run the TUI inline like Claude, so its history lands in
+        // the terminal's scrollback; the alternate screen has none to scroll to.
+        var flags = ["--dangerously-bypass-approvals-and-sandbox", "--no-daemon", "--no-alt-screen"]
         if agent == .lmstudio { flags += ["--oss", "--local-provider", "lmstudio"] }
         if let m = model, !m.isEmpty { flags += ["-m", m] }
 
