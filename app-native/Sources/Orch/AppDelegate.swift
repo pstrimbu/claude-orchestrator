@@ -221,8 +221,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         // Replay saved scrollback
         replayScrollback()
 
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        // Windows a script opens (worker sessions) must not pull focus from
+        // what the owner is doing: show them behind, without activating.
+        if launchInBackground {
+            window.orderBack(nil)
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        }
     }
 
     // MARK: - Window creation

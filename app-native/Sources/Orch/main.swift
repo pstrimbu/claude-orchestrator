@@ -3,12 +3,16 @@ import AppKit
 // --- Parse CLI args ---
 var projectPath = FileManager.default.currentDirectoryPath
 var sessionMode: SessionMode = .new
+var launchInBackground = false
 
 var args = Array(CommandLine.arguments.dropFirst())
 var i = 0
 while i < args.count {
     let arg = args[i]
     switch arg {
+    case "--background":
+        // Opened by a script (orch-worker), not by the user: don't take focus.
+        launchInBackground = true
     case "-c", "--continue":
         sessionMode = .continue_
     case "-r", "--resume":

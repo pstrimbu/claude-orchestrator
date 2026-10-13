@@ -216,5 +216,5 @@ if [ $launch = 1 ]; then
     fi
     stop_window
   fi
-  exec "$(dirname "$0")/orch" "$wt"
+  exec "$(dirname "$0")/orch" "$wt" --background     # never pull focus from the owner
 fi
