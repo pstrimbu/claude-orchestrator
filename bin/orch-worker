@@ -52,11 +52,22 @@ branch="${branch_opt:-wt/$name}"
 
 # Quit the session's orch app. SIGTERM takes the app's normal terminate path
 # (stops the agent, marks the session exited); escalate if it hangs.
+# The window's pid: orch's pid file, else its registry entry — only if that
+# pid really is orch running this folder (pids get reused).
+window_pid() {
+  local p
+  for p in "$(cat "$wt/.orch/orch.pid" 2>/dev/null)" \
+           "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pid",""))' \
+              "$HOME/.config/orch/sessions/$(basename "$wt").json" 2>/dev/null)"; do
+    [ -n "$p" ] && kill -0 "$p" 2>/dev/null && ps -o command= -p "$p" | grep -q "MacOS/orch $wt" && { echo "$p"; return 0; }
+  done
+  return 0
+}
+
 stop_window() {
-  local pidf="$wt/.orch/orch.pid" pid
-  [ -f "$pidf" ] || return 0
-  pid="$(cat "$pidf")"
-  kill -0 "$pid" 2>/dev/null || return 0
+  local pid
+  pid="$(window_pid)"
+  [ -n "$pid" ] || return 0
   kill -TERM "$pid"
   for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || return 0; sleep 1; done
   kill -KILL "$pid" 2>/dev/null || true
@@ -76,10 +87,14 @@ if [ "$action" = rm ]; then
   fi
   branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD)"
   wbase="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("worker_base",""))' "$wt/.orch/project.json" 2>/dev/null || true)"
-  orch_pid="$(cat "$wt/.orch/orch.pid" 2>/dev/null || true)"
+  orch_pid="$(window_pid || true)"
   # Remove first, close the window last: when a session removes ITSELF, closing
-  # the window ends this script too, so it has to be the final step.
-  git -C "$repo" worktree remove --force "$wt"
+  # the window ends this script too, so it has to be the final step. A failed
+  # removal must not leave the window open, so it doesn't stop the script.
+  if ! git -C "$repo" worktree remove --force "$wt"; then
+    echo "orch-worker: couldn't fully remove $wt; closing its window anyway" >&2
+    git -C "$repo" worktree prune 2>/dev/null || true
+  fi
   # Drop it from the launcher sidebar (orch registers every path it opens).
   python3 - "$wt" <<'PY'
 import json, os, sys
