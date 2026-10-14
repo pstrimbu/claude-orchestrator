@@ -91,7 +91,9 @@ if [ "$action" = rm ]; then
   # Remove first, close the window last: when a session removes ITSELF, closing
   # the window ends this script too, so it has to be the final step. A failed
   # removal must not leave the window open, so it doesn't stop the script.
+  gone="removed"
   if ! git -C "$repo" worktree remove --force "$wt"; then
+    gone="couldn't fully remove"
     echo "orch-worker: couldn't fully remove $wt; closing its window anyway" >&2
     git -C "$repo" worktree prune 2>/dev/null || true
   fi
@@ -111,7 +113,7 @@ PY
     n="$(git -C "$repo" rev-list --count "$wbase..$branch" 2>/dev/null || echo 0)"
     [ "$n" -gt 0 ] && note=" — $n commit(s) not yet in $wbase"
   fi
-  echo "removed $wt (branch $branch kept$note)"
+  echo "$gone $wt (branch $branch kept$note)"
   if [ -n "$orch_pid" ] && kill -0 "$orch_pid" 2>/dev/null; then
     kill -TERM "$orch_pid"
     for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$orch_pid" 2>/dev/null || exit 0; sleep 1; done
