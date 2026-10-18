@@ -207,9 +207,9 @@ echo "worker $name: $wt ($branch, $agent${model:+/$model})"
 
 # Register with the Loops portal so its role and identity don't rest on a
 # folder name (SPEC §4.5). Non-fatal: orch works without the portal.
+[ -n "$role" ] || { [ "$name" = lead ] && role=lead || role=worker; }
 loops_cli="$HOME/dev/loops/portal/bin/loops"
 if [ -x "$loops_cli" ]; then
-  [ -n "$role" ] || { [ "$name" = lead ] && role=lead || role=worker; }
   [ -n "$lead" ] || [ "$role" = lead ] || lead="$(basename "$repo")-wt-lead"
   if ! LOOPS_ACTOR=orch-worker "$loops_cli" session register --name "$(basename "$wt")" --path "$wt" \
        --repo "$repo" --role "$role" --agent "${agent/lmstudio/codex}" \
@@ -227,11 +227,12 @@ if [ $launch = 1 ]; then
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
     state="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("state",""))' "$wt/.orch/status.json" 2>/dev/null || true)"
     if [ "$state" != exited ]; then
-      kill -USR1 "$pid"
-      echo "already running ($state) — focused its window"
+      echo "already running ($state)"     # left where it is — a script never brings a window forward
       exit 0
     fi
     stop_window
   fi
-  exec "$(dirname "$0")/orch" "$wt" --background     # never pull focus from the owner
+  # Never pull focus from the owner: workers open minimized, a lead behind other windows.
+  [ "$role" = lead ] && how=--background || how=--minimized
+  exec "$(dirname "$0")/orch" "$wt" "$how"
 fi

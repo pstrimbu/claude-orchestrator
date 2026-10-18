@@ -11,7 +11,7 @@ ARGS=()
 PROJECT_PATH=""
 for arg in "$@"; do
   case "$arg" in
-    -c|--continue|-h|--help|--background)
+    -c|--continue|-h|--help|--background|--minimized)
       ARGS+=("$arg")
       ;;
     -r|--resume)
@@ -199,6 +199,7 @@ LOGFILE="$PROJECT_PATH/.orch/orch.log"
 # --background: opened by a script (orch-worker) — `open -g` keeps it from
 # coming to the foreground, and the app itself won't activate.
 OPEN_FLAGS=(-n)
-for a in ${ARGS[@]+"${ARGS[@]}"}; do [ "$a" = "--background" ] && OPEN_FLAGS+=(-g); done
+# --minimized (Loops workers) also opens in the background, straight into the Dock.
+for a in ${ARGS[@]+"${ARGS[@]}"}; do case "$a" in --background|--minimized) OPEN_FLAGS+=(-g) ;; esac; done
 open "${OPEN_FLAGS[@]}" "$APP_BUNDLE" --args "$PROJECT_PATH" ${ARGS[@]+"${ARGS[@]}"} 2>"$LOGFILE" &
 disown

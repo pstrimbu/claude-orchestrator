@@ -223,7 +223,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
 
         // Windows a script opens (worker sessions) must not pull focus from
         // what the owner is doing: show them behind, without activating.
-        if launchInBackground {
+        if launchMinimized {
+            window.miniaturize(nil)
+        } else if launchInBackground {
             window.orderBack(nil)
         } else {
             NSApp.activate(ignoringOtherApps: true)

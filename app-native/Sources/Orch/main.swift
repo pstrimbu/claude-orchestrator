@@ -4,6 +4,7 @@ import AppKit
 var projectPath = FileManager.default.currentDirectoryPath
 var sessionMode: SessionMode = .new
 var launchInBackground = false
+var launchMinimized = false
 
 var args = Array(CommandLine.arguments.dropFirst())
 var i = 0
@@ -13,6 +14,10 @@ while i < args.count {
     case "--background":
         // Opened by a script (orch-worker), not by the user: don't take focus.
         launchInBackground = true
+    case "--minimized":
+        // A Loops worker: open straight into the Dock, never in front of the owner.
+        launchInBackground = true
+        launchMinimized = true
     case "-c", "--continue":
         sessionMode = .continue_
     case "-r", "--resume":
