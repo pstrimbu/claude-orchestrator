@@ -1210,6 +1210,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     // MARK: - Launcher registration
 
     private func registerWithLauncher() {
+        // Loops worker windows are temporary — keep them out of the launcher
+        // (owner, 2026-10-19). Known by orch-worker's role, or a minimized launch.
+        if launchMinimized || isWorkerSession() { return }
         let configDir = NSHomeDirectory() + "/.config/orch"
         let configFile = configDir + "/launcher-projects.json"
         let name = (projectPath as NSString).lastPathComponent
@@ -1235,6 +1238,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         try? proc.run()
+    }
+
+    private func isWorkerSession() -> Bool {
+        let file = projectPath + "/.orch/project.json"
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: file)),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return json["role"] as? String == "worker"
     }
 
     // MARK: - Cleanup

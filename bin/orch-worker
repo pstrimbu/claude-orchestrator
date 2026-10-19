@@ -190,12 +190,14 @@ else
   fi
 fi
 
+[ -n "$role" ] || { [ "$name" = lead ] && role=lead || role=worker; }
 mkdir -p "$wt/.orch"
-python3 - "$wt/.orch/project.json" "$(basename "$repo")-$name" "$agent" "$model" "$base" "$account" <<'PY'
+python3 - "$wt/.orch/project.json" "$(basename "$repo")-$name" "$agent" "$model" "$base" "$account" "$role" <<'PY'
 import json, sys, os
-path, pid, agent, model, base, account = sys.argv[1:]
+path, pid, agent, model, base, account, role = sys.argv[1:]
 cfg = json.load(open(path)) if os.path.exists(path) else {}
-cfg.update({"project_id": pid, "agent": agent, "tracker": {"type": "none"}})
+# role: a worker's window stays out of the launcher sidebar (owner, 2026-10-19)
+cfg.update({"project_id": pid, "agent": agent, "tracker": {"type": "none"}, "role": role})
 if base: cfg["worker_base"] = base   # where its work integrates; rm reports unmerged commits
 if account: cfg["account"] = account
 if model: cfg["agent_model"] = model
@@ -207,7 +209,6 @@ echo "worker $name: $wt ($branch, $agent${model:+/$model})"
 
 # Register with the Loops portal so its role and identity don't rest on a
 # folder name (SPEC §4.5). Non-fatal: orch works without the portal.
-[ -n "$role" ] || { [ "$name" = lead ] && role=lead || role=worker; }
 loops_cli="$HOME/dev/loops/portal/bin/loops"
 if [ -x "$loops_cli" ]; then
   [ -n "$lead" ] || [ "$role" = lead ] || lead="$(basename "$repo")-wt-lead"
