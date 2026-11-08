@@ -2,6 +2,8 @@
 """orch-account — subscription accounts that orch sessions run on.
 
   orch-account list [--refresh] [--json]   accounts, identity, usage, limits, sessions
+                                           (a login checked over a day ago is re-checked;
+                                           --refresh re-checks all, --cached none)
   orch-account add <claude|codex> <id> [--label L] [--priority N]
                                            create an account (its own config dir)
   orch-account login <id>                  sign that account in (interactive; run it yourself)
@@ -145,14 +147,37 @@ def fmt_reset(ts):
     return d.strftime("%H:%M") if d.date() == datetime.now().date() else d.strftime("%a %H:%M")
 
 
+IDENTITY_MAX_AGE = 24 * 3600   # a login can change under an account (re-login, another email)
+
+
+def stale(a, now):
+    return now - ((a.get("identity") or {}).get("checked_at") or 0) > IDENTITY_MAX_AGE
+
+
+def refresh_identities(ids):
+    """Re-check these accounts' logins. The checks are slow (a CLI each), so the
+    registry is re-read before saving and only the identities are written —
+    a priority or enable change made meanwhile isn't lost."""
+    found = {}
+    for a in load()["accounts"]:
+        if a["id"] in ids:
+            found[a["id"]] = {**identity(a), "checked_at": int(time.time())}
+    reg = load()
+    for a in reg["accounts"]:
+        if a["id"] in found:
+            a["identity"] = found[a["id"]]
+    save(reg)
+    return reg
+
+
 def cmd_list(args):
     reg = load()
+    now = time.time()
     refresh = "--refresh" in args
-    if refresh:
-        for a in reg["accounts"]:
-            a["identity"] = identity(a)
-            a["identity"]["checked_at"] = int(time.time())
-        save(reg)
+    due = [a["id"] for a in reg["accounts"]
+           if refresh or ("--cached" not in args and stale(a, now))]
+    if due:
+        reg = refresh_identities(set(due))
     sess = live_sessions()
     rows = []
     for a in sorted(reg["accounts"], key=lambda a: (a["type"], a.get("priority", 100))):
@@ -181,7 +206,7 @@ def cmd_list(args):
     for t in table:
         print("  ".join(v.ljust(widths[c]) for c, v in enumerate(t)).rstrip())
     if not refresh:
-        print("(identity cached; --refresh to re-check logins)")
+        print("(logins re-checked when over a day old; --refresh to re-check now)")
 
 
 def link_shared(src_root, dst, names):
