@@ -94,7 +94,10 @@ tree_clean() {
   # assume-unchanged (lowercase tag) and skip-worktree (S) entries hide edits
   # from status, so a tree with any is never provably clean
   flags="$(git -C "$wt" ls-files -v 2>/dev/null)" || return 2
-  ! printf '%s\n' "$flags" | grep -q '^[a-zS] '
+  # matched in the shell, not `| grep -q`: with pipefail, grep exiting early
+  # SIGPIPEs printf on a large index and the pipeline reads as "no match"
+  case $'\n'"$flags" in *$'\n'[a-zS]' '*) return 1 ;; esac
+  return 0
 }
 
 # Every directory writable and nothing immutable or append-only: otherwise the
@@ -305,8 +308,9 @@ fi
 # removal cut short (2026-11-12: a reviewer relaunched into a half-deleted tree).
 if [ -d "$wt" ]; then
   real="$(cd "$wt" && pwd -P)"
-  if ! git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-     || ! git -C "$repo" worktree list --porcelain | grep -qxF -e "worktree $wt" -e "worktree $real"; then
+  listed="$(git -C "$repo" worktree list --porcelain 2>/dev/null || true)"
+  case $'\n'"$listed"$'\n' in *$'\n'"worktree $wt"$'\n'*|*$'\n'"worktree $real"$'\n'*) registered=1 ;; *) registered=0 ;; esac
+  if ! git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1 || [ "$registered" -ne 1 ]; then
     echo "orch-worker: $wt exists but isn't a working worktree of $repo (a removal cut short?); not reusing it" >&2
     exit 1
   fi

@@ -165,5 +165,16 @@ chflags nouchg "$wt/d5/f5.txt" 2>/dev/null || true
 [ "$(find "$wt" -name '*.txt' | wc -l | tr -d ' ')" = 300 ] && echo "$out" | grep -q "locked" \
   && ok "a locked file refuses before anything is deleted" || bad "unexpected: $out"
 
+echo "round 4: a large index (no SIGPIPE through pipefail)"
+r="$T/p19"; mkdir -p "$r/big"; git -C "$r" init -q -b main
+git -C "$r" config user.email t@example.invalid; git -C "$r" config user.name t
+( cd "$r/big" && for i in $(seq -w 0 11999); do : > "f$i"; done ); echo base > "$r/big/f00000"
+git -C "$r" add -A; git -C "$r" commit -qm base; git -C "$r" worktree add -q -b wt/w1 "$r-wt-w1" main
+git -C "$r-wt-w1" update-index --assume-unchanged big/f00000; echo "UNCOMMITTED" > "$r-wt-w1/big/f00000"
+out="$("$ORCH_WORKER" rm "$r" w1 2>&1)" && bad "large index: removed a hidden edit ($out)" || true
+grep -q UNCOMMITTED "$r-wt-w1/big/f00000" 2>/dev/null && ok "large index: the hidden edit is kept" || bad "large index: edit lost"
+for i in $(seq 1 40); do git -C "$r" worktree add -q -b "wt/pad$i" "$r-pad$i" main 2>/dev/null; done   # a long worktree list
+out="$("$ORCH_WORKER" "$r" w1 --agent codex --no-launch 2>&1)" && ok "a valid worktree is still reused with a long worktree list" || bad "valid worktree refused: $out"
+
 echo; echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
