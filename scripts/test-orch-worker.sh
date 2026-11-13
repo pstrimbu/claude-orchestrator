@@ -118,8 +118,10 @@ new_repo p11; wt="$T/p11-wt-w1"; echo '{"pid": ""}' > "$HOME/.config/orch/sessio
 chmod 0555 "$wt/d3"
 out="$("$ORCH_WORKER" rm "$T/p11" w1 2>&1)" && bad "a failed removal reported success ($out)" || true
 chmod 0755 "$wt/d3" 2>/dev/null || true
-[ -f "$HOME/.config/orch/sessions/p11-wt-w1.json" ] && echo "$out" | grep -q "couldn't fully remove" \
-  && ok "a failed removal exits nonzero and keeps the session's registry entry" || bad "unexpected: $out"
+[ -f "$HOME/.config/orch/sessions/p11-wt-w1.json" ] && echo "$out" | grep -q "isn't writable" \
+  && [ "$(find "$wt" -name '*.txt' | wc -l | tr -d ' ')" = 300 ] && git -C "$wt" status >/dev/null 2>&1 \
+  && ok "an undeletable directory refuses before anything is deleted; tree, registration and registry kept" \
+  || bad "unexpected: $out ($(find "$wt" -name '*.txt' | wc -l) files left)"
 
 echo "untracked files count whatever status.showUntrackedFiles says"
 new_repo p12; wt="$T/p12-wt-w1"; git -C "$T/p12" config status.showUntrackedFiles no; echo new > "$wt/notes.md"
@@ -149,6 +151,19 @@ echo "$w10" > "$wt/.orch/orch.pid"                         # a stale pid file na
 out="$("$ORCH_WORKER" rm "$T/p16" w1 2>&1)" || true
 kill -0 "$w10" 2>/dev/null && ok "another worktree's window (w10) is never taken for w1's" || bad "w10's window was stopped ($out)"
 kill -TERM "$w10" 2>/dev/null || true
+
+echo "round 3: index flags, and a delete that would stop partway"
+for flag in assume-unchanged skip-worktree; do
+  new_repo p17; wt="$T/p17-wt-w1"
+  git -C "$wt" update-index --$flag d4/f4.txt; echo "hidden edit" > "$wt/d4/f4.txt"
+  out="$("$ORCH_WORKER" rm "$T/p17" w1 2>&1)" && bad "$flag: removed a hidden edit ($out)" || true
+  grep -q "hidden edit" "$wt/d4/f4.txt" 2>/dev/null && ok "$flag: the hidden edit is kept" || bad "$flag: edit lost ($out)"
+done
+new_repo p18; wt="$T/p18-wt-w1"; chflags uchg "$wt/d5/f5.txt"
+out="$("$ORCH_WORKER" rm "$T/p18" w1 2>&1)" && bad "removed past a locked file ($out)" || true
+chflags nouchg "$wt/d5/f5.txt" 2>/dev/null || true
+[ "$(find "$wt" -name '*.txt' | wc -l | tr -d ' ')" = 300 ] && echo "$out" | grep -q "locked" \
+  && ok "a locked file refuses before anything is deleted" || bad "unexpected: $out"
 
 echo; echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

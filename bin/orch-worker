@@ -88,9 +88,30 @@ holders() {
 # True when the tree is clean (orch's own .orch/ aside). Untracked files are
 # always listed, whatever status.showUntrackedFiles says.
 tree_clean() {
-  local st
+  local st flags
   st="$(git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null)" || return 2
-  [ -z "$(printf '%s\n' "$st" | grep -v '^?? .orch/' | sed '/^$/d')" ]
+  [ -z "$(printf '%s\n' "$st" | grep -v '^?? .orch/' | sed '/^$/d')" ] || return 1
+  # assume-unchanged (lowercase tag) and skip-worktree (S) entries hide edits
+  # from status, so a tree with any is never provably clean
+  flags="$(git -C "$wt" ls-files -v 2>/dev/null)" || return 2
+  ! printf '%s\n' "$flags" | grep -q '^[a-zS] '
+}
+
+# Every directory writable and nothing immutable or append-only: otherwise the
+# delete would stop partway. Checked before anything is deleted.
+deletable() {
+  python3 - "$wt" <<'PY'
+import os, stat, sys
+root = sys.argv[1]
+LOCK = stat.UF_IMMUTABLE | stat.UF_APPEND | stat.SF_IMMUTABLE | stat.SF_APPEND
+for d, dirs, files in os.walk(root):
+    if not os.access(d, os.W_OK | os.X_OK):
+        sys.exit(f"{os.path.relpath(d, root)} isn't writable")
+    for n in dirs + files:
+        st = os.lstat(os.path.join(d, n))
+        if getattr(st, "st_flags", 0) & LOCK:
+            sys.exit(f"{os.path.relpath(os.path.join(d, n), root)} is locked (chflags)")
+PY
 }
 
 # Close the window and every process it started: a child that ignores the
@@ -231,11 +252,34 @@ if [ "$action" = rm ]; then
     echo "orch-worker: $wt changed while its window closed; not removing" >&2
     exit 1
   fi
-  if ! git -C "$repo" worktree remove --force "$wt"; then
-    # keep the registry and launcher entries: they're how callers find what's left
-    echo "orch-worker: couldn't fully remove $wt" >&2
+  if ! why="$(deletable 2>&1)"; then
+    echo "orch-worker: can't delete all of $wt ($why); not removing" >&2
     exit 1
   fi
+  # Delete it ourselves, the .git pointer last, and unregister only once the
+  # folder is gone. `git worktree remove` unregisters even when its delete stops
+  # partway, which leaves a half-deleted folder nothing can prove; this way a
+  # failure leaves a registered tree that can still be checked and finished.
+  if ! python3 - "$wt" <<'PY'
+import os, shutil, sys
+root = sys.argv[1]
+for n in sorted(os.listdir(root)):
+    if n == ".git":
+        continue
+    p = os.path.join(root, n)
+    if os.path.isdir(p) and not os.path.islink(p):
+        shutil.rmtree(p)
+    else:
+        os.unlink(p)
+os.unlink(os.path.join(root, ".git"))
+os.rmdir(root)
+PY
+  then
+    # keep the registry and launcher entries: they're how callers find what's left
+    echo "orch-worker: couldn't fully remove $wt (still registered with git)" >&2
+    exit 1
+  fi
+  git -C "$repo" worktree prune
   gone="removed"
   # Drop it from the launcher sidebar (orch registers every path it opens).
   python3 - "$wt" <<'PY'
