@@ -79,23 +79,49 @@ if [ "$action" = stop ]; then
   exit 0
 fi
 
+# True when this script runs inside that window (the session removing itself).
+inside_window() {
+  local p=$$
+  while [ -n "$p" ] && [ "$p" -gt 1 ]; do
+    [ "$p" = "$1" ] && return 0
+    p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"
+  done
+  return 1
+}
+
 if [ "$action" = rm ]; then
   [ -d "$wt" ] || { echo "orch-worker: no worktree at $wt" >&2; exit 1; }
-  if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null | grep -v '^?? .orch/')" ]; then
+  # Fail closed: a folder git can't read (its worktree metadata gone, e.g. a
+  # removal cut short) proves nothing about what's in it.
+  if ! st="$(git -C "$wt" status --porcelain 2>/dev/null)"; then
+    echo "orch-worker: $wt isn't a working git worktree (a removal cut short?); not removing" >&2
+    exit 1
+  fi
+  if [ -n "$(printf '%s\n' "$st" | grep -v '^?? .orch/' | sed '/^$/d')" ]; then
     echo "orch-worker: $wt has uncommitted changes; not removing" >&2
     exit 1
   fi
   branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD)"
   wbase="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("worker_base",""))' "$wt/.orch/project.json" 2>/dev/null || true)"
   orch_pid="$(window_pid || true)"
-  # Remove first, close the window last: when a session removes ITSELF, closing
-  # the window ends this script too, so it has to be the final step. A failed
-  # removal must not leave the window open, so it doesn't stop the script.
+  if [ -n "$orch_pid" ] && [ -z "${ORCH_WORKER_DETACHED:-}" ] && inside_window "$orch_pid"; then
+    # The session is removing itself: closing its window would end this script.
+    # A helper in its own session (so the window's exit doesn't take it) closes
+    # the window, then removes the tree.
+    log="$HOME/.config/orch/orch-worker.log"; mkdir -p "$(dirname "$log")"
+    ORCH_WORKER_DETACHED=1 python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+      "$0" rm "$repo" "$name" >>"$log" 2>&1 </dev/null &
+    echo "removing $wt after its window closes (log: $log)"
+    exit 0
+  fi
+  # Close the window FIRST: a live window keeps writing into .orch/, which makes
+  # git's delete fail partway — and git then drops the worktree's metadata
+  # anyway, leaving a half-deleted folder nothing can prove (2026-11-12).
+  stop_window
   gone="removed"
   if ! git -C "$repo" worktree remove --force "$wt"; then
     gone="couldn't fully remove"
-    echo "orch-worker: couldn't fully remove $wt; closing its window anyway" >&2
-    git -C "$repo" worktree prune 2>/dev/null || true
+    echo "orch-worker: couldn't fully remove $wt" >&2
   fi
   # Drop it from the launcher sidebar (orch registers every path it opens).
   python3 - "$wt" <<'PY'
@@ -114,12 +140,18 @@ PY
     [ "$n" -gt 0 ] && note=" — $n commit(s) not yet in $wbase"
   fi
   echo "$gone $wt (branch $branch kept$note)"
-  if [ -n "$orch_pid" ] && kill -0 "$orch_pid" 2>/dev/null; then
-    kill -TERM "$orch_pid"
-    for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$orch_pid" 2>/dev/null || exit 0; sleep 1; done
-    kill -KILL "$orch_pid" 2>/dev/null || true
-  fi
   exit 0
+fi
+
+# Never reuse a folder that isn't a working worktree of this repo — e.g. one a
+# removal cut short (2026-11-12: a reviewer relaunched into a half-deleted tree).
+if [ -d "$wt" ]; then
+  real="$(cd "$wt" && pwd -P)"
+  if ! git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+     || ! git -C "$repo" worktree list --porcelain | grep -qxF -e "worktree $wt" -e "worktree $real"; then
+    echo "orch-worker: $wt exists but isn't a working worktree of $repo (a removal cut short?); not reusing it" >&2
+    exit 1
+  fi
 fi
 
 if [ ! -d "$wt" ]; then
