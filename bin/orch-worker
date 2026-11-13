@@ -63,7 +63,9 @@ window_pid() {
               "$HOME/.config/orch/sessions/$(basename "$wt").json" 2>/dev/null)"; do
     [ -n "$p" ] && kill -0 "$p" 2>/dev/null || continue
     cmd="$(ps -o command= -p "$p" 2>/dev/null)" || return 2
-    case "$cmd" in *"MacOS/orch $wt"*) echo "$p"; return 0 ;; esac
+    # exactly this folder: "…/MacOS/orch <wt>" alone or followed by options —
+    # never <wt>10 or <wt>-other (another worktree sharing the prefix)
+    case "$cmd" in *"MacOS/orch $wt"|*"MacOS/orch $wt "*) echo "$p"; return 0 ;; esac
   done
   return 0
 }
@@ -71,10 +73,15 @@ window_pid() {
 # Processes with a file, directory or working directory inside the tree
 # (lsof; "?" when lsof itself fails, which callers treat as busy).
 holders() {
-  local out
-  out="$(lsof -n -P -w -F pc +D "$wt" 2>/dev/null)"; local rc=$?
-  # +D exits 1 when nothing is open; anything else, or a 1 with output, is real
-  if [ $rc -ne 0 ] && [ $rc -ne 1 ]; then echo "?"; return; fi
+  local out err rc
+  err="$(mktemp)"
+  out="$(lsof -n -P -F pc +D "$wt" 2>"$err")"; rc=$?
+  # +D exits 1 when nothing is open. Any warning (e.g. a directory it couldn't
+  # open, which could hide a holder) or any other exit means it can't tell.
+  if { [ $rc -ne 0 ] && [ $rc -ne 1 ]; } || [ -s "$err" ]; then
+    echo "? (lsof: $(head -c 160 "$err" | tr '\n' ' '))"; rm -f "$err"; return
+  fi
+  rm -f "$err"
   printf '%s\n' "$out" | awk '/^p/{p=substr($0,2)} /^c/{print p" ("substr($0,2)")"}' | sort -u
 }
 
@@ -119,15 +126,25 @@ while todo:
     for pid, (ppid, start) in rows.items():
         if ppid == parent and pid not in kids and pid not in mine:
             kids[pid] = start; todo.append(pid)
+class Unsure(Exception):
+    pass
 def alive(pid, start=None):
     try:
         os.kill(pid, 0)
-    except OSError:
+    except ProcessLookupError:
         return False
+    except OSError:
+        raise Unsure(f"can't signal-check pid {pid}")
     if start is None:
         return True
     r = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True)
-    return r.returncode == 0 and r.stdout.strip() == start      # same process, not a reused pid
+    if r.returncode != 0 or not r.stdout.strip():
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False                       # it exited between the two checks
+        raise Unsure(f"can't identify pid {pid} (ps failed)")
+    return r.stdout.strip() == start           # same process, not a reused pid
 def stop(pids, wait):
     for pid, start in pids.items():
         if alive(pid, start):
@@ -138,8 +155,14 @@ def stop(pids, wait):
     for pid, start in pids.items():
         if alive(pid, start):
             os.kill(pid, signal.SIGKILL)
-stop({root: rows.get(root, (0, None))[1]}, 10)
-stop(kids, 5)
+try:
+    stop({root: rows.get(root, (0, None))[1]}, 10)
+    stop(kids, 5)
+    left = [p for p, st in {root: rows.get(root, (0, None))[1], **kids}.items() if alive(p, st)]
+except Unsure as e:
+    print(f"orch-worker: {e}; not sure the window's processes are gone", file=sys.stderr); sys.exit(1)
+if left:
+    print(f"orch-worker: still running after KILL: {left}", file=sys.stderr); sys.exit(1)
 PY
 }
 

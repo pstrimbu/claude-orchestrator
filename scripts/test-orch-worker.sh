@@ -125,5 +125,30 @@ echo "untracked files count whatever status.showUntrackedFiles says"
 new_repo p12; wt="$T/p12-wt-w1"; git -C "$T/p12" config status.showUntrackedFiles no; echo new > "$wt/notes.md"
 ! "$ORCH_WORKER" rm "$T/p12" w1 >/dev/null 2>&1 && [ -f "$wt/notes.md" ] && ok "untracked file kept" || bad "untracked file deleted"
 
+echo "round 2: lsof warnings, late ps failures, prefix-sharing windows"
+new_repo p14; wt="$T/p14-wt-w1"; mkdir -p "$wt/.orch/locked/deep"
+( cd "$wt/.orch/locked/deep" && exec sleep 30 ) & other=$!; pids+=($other); sleep 0.3
+chmod 000 "$wt/.orch/locked"
+out="$("$ORCH_WORKER" rm "$T/p14" w1 2>&1)" && bad "removed past an unreadable directory ($out)" || true
+chmod 755 "$wt/.orch/locked" 2>/dev/null || true
+[ -f "$wt/d1/f1.txt" ] && git -C "$T/p14" worktree list | grep -qF "$wt" && echo "$out" | grep -q "lsof" \
+  && ok "an lsof warning stops the removal; tree kept" || bad "unexpected: $out"
+kill -KILL "$other" 2>/dev/null || true
+new_repo p15; wt="$T/p15-wt-w1"; window "$wt"; w=$last
+cat > "$T/shim/ps" <<SH
+#!/bin/sh
+case "\$*" in *lstart=*-p*) exit 1 ;; esac
+exec /bin/ps "\$@"
+SH
+chmod +x "$T/shim/ps"
+out="$(PATH="$T/shim:$PATH" "$ORCH_WORKER" rm "$T/p15" w1 2>&1)" && bad "removed though ps couldn't identify the window ($out)" || true
+[ -f "$wt/d1/f1.txt" ] && echo "$out" | grep -q "not sure" && ok "a late ps failure stops the removal; tree kept" || bad "unexpected: $out"
+kill -TERM "$w" 2>/dev/null || true
+new_repo p16; wt="$T/p16-wt-w1"; mkdir -p "$T/p16-wt-w10/.orch"; window "$T/p16-wt-w10"; w10=$last
+echo "$w10" > "$wt/.orch/orch.pid"                         # a stale pid file naming w10's window
+out="$("$ORCH_WORKER" rm "$T/p16" w1 2>&1)" || true
+kill -0 "$w10" 2>/dev/null && ok "another worktree's window (w10) is never taken for w1's" || bad "w10's window was stopped ($out)"
+kill -TERM "$w10" 2>/dev/null || true
+
 echo; echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
