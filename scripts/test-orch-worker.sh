@@ -176,5 +176,15 @@ grep -q UNCOMMITTED "$r-wt-w1/big/f00000" 2>/dev/null && ok "large index: the hi
 for i in $(seq 1 40); do git -C "$r" worktree add -q -b "wt/pad$i" "$r-pad$i" main 2>/dev/null; done   # a long worktree list
 out="$("$ORCH_WORKER" "$r" w1 --agent codex --no-launch 2>&1)" && ok "a valid worktree is still reused with a long worktree list" || bad "valid worktree refused: $out"
 
+echo "round 5: a read-only parent"
+mkdir -p "$T/nest"; r="$T/nest/p20"; mkdir -p "$r"; git -C "$r" init -q -b main
+git -C "$r" config user.email t@example.invalid; git -C "$r" config user.name t
+echo a > "$r/a"; git -C "$r" add -A; git -C "$r" commit -qm base; git -C "$r" worktree add -q -b wt/w1 "$r-wt-w1" main
+chmod 0555 "$T/nest"
+out="$("$ORCH_WORKER" rm "$r" w1 2>&1)" && bad "removed under a read-only parent ($out)" || true
+chmod 0755 "$T/nest"
+[ -f "$r-wt-w1/a" ] && git -C "$r-wt-w1" status >/dev/null 2>&1 && echo "$out" | grep -q "parent" \
+  && ok "a read-only parent refuses before anything is deleted; tree still a working worktree" || bad "unexpected: $out"
+
 echo; echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

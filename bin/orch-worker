@@ -107,6 +107,13 @@ deletable() {
 import os, stat, sys
 root = sys.argv[1]
 LOCK = stat.UF_IMMUTABLE | stat.UF_APPEND | stat.SF_IMMUTABLE | stat.SF_APPEND
+parent = os.path.dirname(os.path.abspath(root))
+# removing the folder itself needs its parent writable, and neither locked
+if not os.access(parent, os.W_OK | os.X_OK):
+    sys.exit(f"its parent {parent} isn't writable")
+for p in (parent, root):
+    if getattr(os.lstat(p), "st_flags", 0) & LOCK:
+        sys.exit(f"{p} is locked (chflags)")
 for d, dirs, files in os.walk(root):
     if not os.access(d, os.W_OK | os.X_OK):
         sys.exit(f"{os.path.relpath(d, root)} isn't writable")
@@ -274,8 +281,16 @@ for n in sorted(os.listdir(root)):
         shutil.rmtree(p)
     else:
         os.unlink(p)
-os.unlink(os.path.join(root, ".git"))
-os.rmdir(root)
+pointer = os.path.join(root, ".git")
+with open(pointer, "rb") as f:
+    saved = f.read()
+os.unlink(pointer)
+try:
+    os.rmdir(root)
+except OSError:
+    with open(pointer, "wb") as f:     # put the pointer back: still a checkable, registered tree
+        f.write(saved)
+    raise
 PY
   then
     # keep the registry and launcher entries: they're how callers find what's left
