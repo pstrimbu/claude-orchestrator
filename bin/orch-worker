@@ -54,23 +54,93 @@ branch="${branch_opt:-wt/$name}"
 # (stops the agent, marks the session exited); escalate if it hangs.
 # The window's pid: orch's pid file, else its registry entry — only if that
 # pid really is orch running this folder (pids get reused).
+# Exit status 2 when a live candidate can't be identified (ps failed): callers
+# that delete must treat "can't tell" as "maybe running".
 window_pid() {
-  local p
+  local p cmd
   for p in "$(cat "$wt/.orch/orch.pid" 2>/dev/null)" \
            "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pid",""))' \
               "$HOME/.config/orch/sessions/$(basename "$wt").json" 2>/dev/null)"; do
-    [ -n "$p" ] && kill -0 "$p" 2>/dev/null && ps -o command= -p "$p" | grep -q "MacOS/orch $wt" && { echo "$p"; return 0; }
+    [ -n "$p" ] && kill -0 "$p" 2>/dev/null || continue
+    cmd="$(ps -o command= -p "$p" 2>/dev/null)" || return 2
+    case "$cmd" in *"MacOS/orch $wt"*) echo "$p"; return 0 ;; esac
   done
   return 0
 }
 
+# Processes with a file, directory or working directory inside the tree
+# (lsof; "?" when lsof itself fails, which callers treat as busy).
+holders() {
+  local out
+  out="$(lsof -n -P -w -F pc +D "$wt" 2>/dev/null)"; local rc=$?
+  # +D exits 1 when nothing is open; anything else, or a 1 with output, is real
+  if [ $rc -ne 0 ] && [ $rc -ne 1 ]; then echo "?"; return; fi
+  printf '%s\n' "$out" | awk '/^p/{p=substr($0,2)} /^c/{print p" ("substr($0,2)")"}' | sort -u
+}
+
+# True when the tree is clean (orch's own .orch/ aside). Untracked files are
+# always listed, whatever status.showUntrackedFiles says.
+tree_clean() {
+  local st
+  st="$(git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null)" || return 2
+  [ -z "$(printf '%s\n' "$st" | grep -v '^?? .orch/' | sed '/^$/d')" ]
+}
+
+# Close the window and every process it started: a child that ignores the
+# hangup (a stuck agent, a dev server) would otherwise keep writing into the
+# tree. The descendants are listed once, before the window closes, with their
+# start times, so a reused pid is never signalled. This script and its own
+# ancestors are never in the list.
 stop_window() {
   local pid
-  pid="$(window_pid)"
+  pid="$(window_pid)" || { echo "orch-worker: can't tell whether $(basename "$wt")'s window is running (ps failed)" >&2; return 1; }
   [ -n "$pid" ] || return 0
-  kill -TERM "$pid"
-  for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || return 0; sleep 1; done
-  kill -KILL "$pid" 2>/dev/null || true
+  python3 - "$pid" "$$" <<'PY'
+import os, signal, subprocess, sys, time
+root, me = int(sys.argv[1]), int(sys.argv[2])
+def table():
+    out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,lstart="], capture_output=True, text=True, check=True).stdout
+    rows = {}
+    for line in out.splitlines():
+        f = line.split(None, 2)
+        if len(f) == 3:
+            rows[int(f[0])] = (int(f[1]), f[2].strip())
+    return rows
+try:
+    rows = table()
+except (OSError, subprocess.SubprocessError, ValueError):
+    print(f"orch-worker: can't list the window's processes (ps failed)", file=sys.stderr); sys.exit(1)
+mine, p = set(), me
+while p in rows and p > 1:
+    mine.add(p); p = rows[p][0]
+kids, todo = {}, [root]
+while todo:
+    parent = todo.pop()
+    for pid, (ppid, start) in rows.items():
+        if ppid == parent and pid not in kids and pid not in mine:
+            kids[pid] = start; todo.append(pid)
+def alive(pid, start=None):
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    if start is None:
+        return True
+    r = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True)
+    return r.returncode == 0 and r.stdout.strip() == start      # same process, not a reused pid
+def stop(pids, wait):
+    for pid, start in pids.items():
+        if alive(pid, start):
+            os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline and any(alive(p, s) for p, s in pids.items()):
+        time.sleep(0.2)
+    for pid, start in pids.items():
+        if alive(pid, start):
+            os.kill(pid, signal.SIGKILL)
+stop({root: rows.get(root, (0, None))[1]}, 10)
+stop(kids, 5)
+PY
 }
 
 if [ "$action" = stop ]; then
@@ -80,11 +150,12 @@ if [ "$action" = stop ]; then
 fi
 
 # True when this script runs inside that window (the session removing itself).
-inside_window() {
+inside_window() {     # 0 inside, 1 not, 2 can't tell (ps failed)
   local p=$$
   while [ -n "$p" ] && [ "$p" -gt 1 ]; do
     [ "$p" = "$1" ] && return 0
-    p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"
+    p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')" || return 2
+    [ -n "$p" ] || return 2
   done
   return 1
 }
@@ -93,18 +164,23 @@ if [ "$action" = rm ]; then
   [ -d "$wt" ] || { echo "orch-worker: no worktree at $wt" >&2; exit 1; }
   # Fail closed: a folder git can't read (its worktree metadata gone, e.g. a
   # removal cut short) proves nothing about what's in it.
-  if ! st="$(git -C "$wt" status --porcelain 2>/dev/null)"; then
+  rc=0; tree_clean || rc=$?
+  if [ $rc -eq 2 ]; then
     echo "orch-worker: $wt isn't a working git worktree (a removal cut short?); not removing" >&2
     exit 1
-  fi
-  if [ -n "$(printf '%s\n' "$st" | grep -v '^?? .orch/' | sed '/^$/d')" ]; then
+  elif [ $rc -ne 0 ]; then
     echo "orch-worker: $wt has uncommitted changes; not removing" >&2
     exit 1
   fi
   branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD)"
   wbase="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("worker_base",""))' "$wt/.orch/project.json" 2>/dev/null || true)"
-  orch_pid="$(window_pid || true)"
-  if [ -n "$orch_pid" ] && [ -z "${ORCH_WORKER_DETACHED:-}" ] && inside_window "$orch_pid"; then
+  orch_pid="$(window_pid)" || { echo "orch-worker: can't tell whether $(basename "$wt")'s window is running (ps failed); not removing" >&2; exit 1; }
+  inside=1
+  if [ -n "$orch_pid" ] && [ -z "${ORCH_WORKER_DETACHED:-}" ]; then
+    inside_window "$orch_pid" && inside=0 || inside=$?
+    [ $inside -eq 2 ] && { echo "orch-worker: can't tell whether this runs inside $(basename "$wt")'s window (ps failed); not removing" >&2; exit 1; }
+  fi
+  if [ $inside -eq 0 ]; then
     # The session is removing itself: closing its window would end this script.
     # A helper in its own session (so the window's exit doesn't take it) closes
     # the window, then removes the tree.
@@ -117,12 +193,27 @@ if [ "$action" = rm ]; then
   # Close the window FIRST: a live window keeps writing into .orch/, which makes
   # git's delete fail partway — and git then drops the worktree's metadata
   # anyway, leaving a half-deleted folder nothing can prove (2026-11-12).
-  stop_window
-  gone="removed"
-  if ! git -C "$repo" worktree remove --force "$wt"; then
-    gone="couldn't fully remove"
-    echo "orch-worker: couldn't fully remove $wt" >&2
+  stop_window || exit 1
+  # The window is gone, but its children, or a shutdown handler, may still be
+  # writing: wait briefly for every process to let go of the tree, then check
+  # it's still clean — --force would delete anything written since.
+  busy=""
+  for _ in 1 2 3 4 5 6 7 8 9 10; do busy="$(holders)"; [ -z "$busy" ] && break; sleep 0.5; done
+  if [ -n "$busy" ]; then
+    echo "orch-worker: still in use after its window closed: $(echo $busy | tr '\n' ' ')— tree kept: $wt" >&2
+    exit 1
   fi
+  rc=0; tree_clean || rc=$?
+  if [ $rc -ne 0 ]; then
+    echo "orch-worker: $wt changed while its window closed; not removing" >&2
+    exit 1
+  fi
+  if ! git -C "$repo" worktree remove --force "$wt"; then
+    # keep the registry and launcher entries: they're how callers find what's left
+    echo "orch-worker: couldn't fully remove $wt" >&2
+    exit 1
+  fi
+  gone="removed"
   # Drop it from the launcher sidebar (orch registers every path it opens).
   python3 - "$wt" <<'PY'
 import json, os, sys

@@ -37,8 +37,12 @@ cat > "$T/fake.app/Contents/MacOS/orch" <<'SH'
 #!/usr/bin/env bash
 wt="$1"
 echo $$ > "$wt/.orch/orch.pid"
-trap 'exit 0' TERM
+trap '[ -n "${FAKE_TERM_EDIT:-}" ] && echo "written on shutdown" >> "$FAKE_TERM_EDIT"; exit 0' TERM
 [ -n "${FAKE_RUN:-}" ] && { bash -c "$FAKE_RUN" > "$wt.run.out" 2>&1 & }
+if [ -n "${FAKE_CHILD:-}" ]; then      # a writer that outlives the window
+  ( trap '' TERM; while :; do echo x > "$wt/.orch/child.json" 2>/dev/null; sleep 0.01; done ) &
+  echo $! > "$wt.child.pid"
+fi
 i=0
 while :; do
   mkdir -p "$wt/.orch" 2>/dev/null && echo "$i" > "$wt/.orch/status.json" 2>/dev/null
@@ -83,6 +87,43 @@ out="$("$ORCH_WORKER" "$T/p6" x --agent codex --no-launch 2>&1)" && bad "reused 
 [ "$(cat "$T/p6-wt-x/file")" = junk ] && ok "refused a plain folder, left it alone" || bad "plain folder touched"
 new_repo p7
 out="$("$ORCH_WORKER" "$T/p7" w1 --agent codex --no-launch 2>&1)" && ok "a valid existing worktree is still reused" || bad "valid worktree refused: $out"
+
+echo "rm re-checks after the window closes, and waits for every writer"
+new_repo p8; wt="$T/p8-wt-w1"
+FAKE_TERM_EDIT="$wt/d1/f1.txt" window "$wt"
+out="$("$ORCH_WORKER" rm "$T/p8" w1 2>&1)" && bad "removed after a shutdown edit ($out)" || true
+grep -q "written on shutdown" "$wt/d1/f1.txt" 2>/dev/null && echo "$out" | grep -q "changed while its window closed" \
+  && ok "a shutdown handler's edit is kept" || bad "edit lost or wrong reason: $out"
+new_repo p9; wt="$T/p9-wt-w1"
+FAKE_CHILD=1 window "$wt"; child="$(cat "$wt.child.pid")"; pids+=($child)
+out="$("$ORCH_WORKER" rm "$T/p9" w1 2>&1)" || true
+sleep 0.3
+! kill -0 "$child" 2>/dev/null && ok "the window's child that ignores TERM is stopped too" || bad "child still running"
+[ ! -e "$wt" ] && ok "so the removal completes ($out)" || bad "tree left behind: $(find "$wt" | head -3) ($out)"
+new_repo p13; wt="$T/p13-wt-w1"
+( cd "$wt/d1" && exec sleep 30 ) & other=$!; pids+=($other); sleep 0.3
+out="$("$ORCH_WORKER" rm "$T/p13" w1 2>&1)" && bad "removed while another process works inside it ($out)" || true
+[ -d "$wt/d1" ] && git -C "$T/p13" worktree list | grep -qF "$wt" && echo "$out" | grep -q "still in use" \
+  && ok "an unrelated process inside the tree stops the removal; tree and registration kept" || bad "unexpected: $out"
+kill -KILL "$other" 2>/dev/null || true
+
+echo "rm fails closed when ps fails, and when the removal itself fails"
+new_repo p10; wt="$T/p10-wt-w1"; window "$wt"; w=$last
+mkdir -p "$T/shim"; printf '#!/bin/sh\nexit 1\n' > "$T/shim/ps"; chmod +x "$T/shim/ps"
+out="$(PATH="$T/shim:$PATH" "$ORCH_WORKER" rm "$T/p10" w1 2>&1)" && bad "removed without seeing the window ($out)" || true
+[ -d "$wt/d1" ] && kill -0 "$w" 2>/dev/null && echo "$out" | grep -q "ps failed" \
+  && ok "an unobservable window refuses the removal" || bad "unexpected: $out"
+kill -TERM "$w" 2>/dev/null || true
+new_repo p11; wt="$T/p11-wt-w1"; echo '{"pid": ""}' > "$HOME/.config/orch/sessions/p11-wt-w1.json"
+chmod 0555 "$wt/d3"
+out="$("$ORCH_WORKER" rm "$T/p11" w1 2>&1)" && bad "a failed removal reported success ($out)" || true
+chmod 0755 "$wt/d3" 2>/dev/null || true
+[ -f "$HOME/.config/orch/sessions/p11-wt-w1.json" ] && echo "$out" | grep -q "couldn't fully remove" \
+  && ok "a failed removal exits nonzero and keeps the session's registry entry" || bad "unexpected: $out"
+
+echo "untracked files count whatever status.showUntrackedFiles says"
+new_repo p12; wt="$T/p12-wt-w1"; git -C "$T/p12" config status.showUntrackedFiles no; echo new > "$wt/notes.md"
+! "$ORCH_WORKER" rm "$T/p12" w1 >/dev/null 2>&1 && [ -f "$wt/notes.md" ] && ok "untracked file kept" || bad "untracked file deleted"
 
 echo; echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
