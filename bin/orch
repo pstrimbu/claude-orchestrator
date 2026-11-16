@@ -21,8 +21,13 @@ for arg in "$@"; do
       ARGS+=("$arg")
       ;;
     *)
-      # If previous arg was --resume/-r, this is the session ID
-      if [[ ${#ARGS[@]} -gt 0 && ( "${ARGS[-1]}" == "-r" || "${ARGS[-1]}" == "--resume" ) ]]; then
+      # If previous arg was --resume/-r, this is the session ID.
+      # No ${ARGS[-1]}: macOS's /bin/bash is 3.2, where a negative subscript is
+      # a fatal "bad array subscript" — that silently killed every F5 relaunch
+      # that passed --resume <id> (2026-11-16).
+      PREV=""
+      [ ${#ARGS[@]} -gt 0 ] && PREV="${ARGS[${#ARGS[@]}-1]}"
+      if [[ "$PREV" == "-r" || "$PREV" == "--resume" ]]; then
         ARGS+=("$arg")
       elif [ -z "$PROJECT_PATH" ]; then
         PROJECT_PATH="$arg"
