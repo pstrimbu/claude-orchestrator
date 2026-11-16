@@ -31,6 +31,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     private var sessionStartedAt = Date()
     /// An F5 relaunch is waiting on the launch script; ignore repeat presses.
     private var relaunching = false
+    /// The relaunch succeeded: the replacement window owns the per-project state files.
+    private var handedOver = false
     private var limitedUntil: Date?
     private var usageTicks = 0
     /// Letters-only tail of recent PTY output, for spotting a blocking prompt.
@@ -524,6 +526,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
                 guard let self = self else { return }
                 self.relaunching = false
                 if status == 0 {
+                    self.handedOver = true
                     NSApp.terminate(nil)
                 } else {
                     self.relaunchFailed("orch exited \(status), see \(logPath)", mode: mode)
@@ -1313,6 +1316,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         sizePollTimer?.invalidate()
         clockify?.destroy()
         session?.kill()
+        // After an F5 relaunch the new window is already starting and owns
+        // orch.pid and the session status; removing or marking them "exited"
+        // here could land after it wrote them.
+        if handedOver { return }
         bus?.shutdown()
         try? FileManager.default.removeItem(atPath: config.orchDir + "/orch.pid")
     }
