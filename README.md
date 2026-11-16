@@ -57,7 +57,7 @@ JIRA_BASE_URL=... JIRA_EMAIL=... JIRA_API_TOKEN=...   # Jira issues
 | `orch-launcher` | Floating project-launcher panel |
 | `orch-tracker` | Issue tracker CLI (routes to Linear or Jira) |
 
-Hotkeys: **F1** project panel · **F5** save scrollback + relaunch with `--continue` ·
+Hotkeys: **F1** project panel · **F5** or **Cmd+R** save scrollback + relaunch with `--continue` (on a Mac keyboard F5 needs Fn unless the top row is set to standard function keys) ·
 **Ctrl+R** restart session in place.
 
 ## Layout

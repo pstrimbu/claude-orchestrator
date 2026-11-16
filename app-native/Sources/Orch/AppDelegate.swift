@@ -29,6 +29,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     /// (Codex usage is read from session logs written after that).
     private var account: Account?
     private var sessionStartedAt = Date()
+    /// An F5 relaunch is waiting on the launch script; ignore repeat presses.
+    private var relaunching = false
+    /// The relaunch succeeded: the replacement window owns the per-project state files.
+    private var handedOver = false
     private var limitedUntil: Date?
     private var usageTicks = 0
     /// Letters-only tail of recent PTY output, for spotting a blocking prompt.
@@ -320,6 +324,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         let windowMenu = NSMenu(title: "Window")
         let newWindowItem = NSMenuItem(title: "New Window", action: #selector(handleCmdN), keyEquivalent: "n")
         windowMenu.addItem(newWindowItem)
+        // Same as F5. On a Mac keyboard the top row sends media keys unless Fn is
+        // held (or "use F1, F2… as standard function keys" is on), so a bare F5
+        // press never reaches the app; Cmd+R always does.
+        windowMenu.addItem(NSMenuItem(title: "Relaunch (F5)", action: #selector(handleF5), keyEquivalent: "r"))
         let windowMenuItem = NSMenuItem()
         windowMenuItem.submenu = windowMenu
         mainMenu.addItem(windowMenuItem)
@@ -470,14 +478,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         try? proc.run()
     }
 
-    private func handleF5() {
+    /// Relaunch the whole app (F5 / Cmd+R): save scrollback, start a fresh orch
+    /// process resuming this session, and quit — but only once the launch
+    /// script has actually succeeded. Quitting as soon as the script had merely
+    /// *started* turned any failure inside it into a window that closed and
+    /// never came back (2026-11-16: bin/orch died on a bash-3.2 syntax error).
+    @objc private func handleF5() {
+        guard !relaunching else { return }
         saveScrollback()
         if clockify.recording { Task { try? await clockify.flush() } }
 
         // Relaunch needs the orch CLI. The .app bundle inherits launchd's minimal
         // PATH, so resolve orch's absolute path first. If it can't be found, fall
-        // back to an in-place session restart rather than terminating into a
-        // closed window (the reported "F5 closes but doesn't reopen" bug).
+        // back to an in-place session restart.
         let orch = resolveOrchPath()
         guard FileManager.default.isExecutableFile(atPath: orch) else {
             Log.log("F5: orch not resolvable (\(orch)); falling back to in-place restart")
@@ -491,22 +504,57 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         // discovery relies on. Fall back to --continue if the id isn't known.
         // Codex/LM Studio don't use our session ids, so they just --continue.
         let sid = config.agent == .claude ? resolveSessionId() : nil
+        let mode: SessionMode = sid.map { .resume(id: $0) } ?? .continue_
+        // The agent must be gone before the new window resumes the same session.
         session?.kill()
-        let resumeArgs = sid.map { "--resume \($0)" } ?? "--continue"
+
+        // The script's output goes to a file, not a pipe (it backgrounds `open`,
+        // which would hold a pipe open) and not orch.log (the script truncates it).
+        let logPath = config.orchDir + "/relaunch.log"
+        FileManager.default.createFile(atPath: logPath, contents: nil)
+        let out = FileHandle(forWritingAtPath: logPath) ?? FileHandle.nullDevice
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-        proc.arguments = ["-c", "\"\(orch)\" \"\(projectPath)\" \(resumeArgs)"]
+        proc.executableURL = URL(fileURLWithPath: orch)
+        proc.arguments = [projectPath] + (sid.map { ["--resume", $0] } ?? ["--continue"])
         proc.currentDirectoryURL = URL(fileURLWithPath: projectPath)
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
+        proc.standardInput = FileHandle.nullDevice
+        proc.standardOutput = out
+        proc.standardError = out
+        proc.terminationHandler = { [weak self] p in
+            let status = p.terminationStatus
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.relaunching = false
+                if status == 0 {
+                    self.handedOver = true
+                    NSApp.terminate(nil)
+                } else {
+                    self.relaunchFailed("orch exited \(status), see \(logPath)", mode: mode)
+                }
+            }
+        }
+        relaunching = true
+        feedNotice("Relaunching\u{2026}")
         do {
             try proc.run()
         } catch {
-            Log.log("F5 relaunch spawn failed: \(error); falling back to in-place restart")
-            handleCtrlR()  // session already killed; Ctrl+R respawns --continue
-            return
+            relaunching = false
+            relaunchFailed("could not start \(orch): \(error)", mode: mode)
         }
-        NSApp.terminate(nil)
+    }
+
+    /// The relaunch didn't happen: keep this window and bring the session back
+    /// in place (it was already stopped for the handover).
+    private func relaunchFailed(_ why: String, mode: SessionMode) {
+        Log.log("F5 relaunch failed: \(why); restarting the session in place")
+        feedNotice("Relaunch failed (\(why)). Restarting the session in this window.")
+        restartSession(mode: mode)
+    }
+
+    private func feedNotice(_ text: String) {
+        let msg = "\r\n\u{1b}[90m[\(text)]\u{1b}[0m\r\n"
+        terminalView.feed(byteArray: [UInt8](msg.utf8)[...])
+        forceRepaint()
     }
 
     private func handleCtrlR() {
@@ -517,8 +565,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         // Only Claude tracks the session id we resume by; Codex/LM Studio continue
         // their own most-recent session via --continue (-> `codex resume --last`).
         let sid = config.agent == .claude ? resolveSessionId() : nil
+        restartSession(mode: sid.map { .resume(id: $0) } ?? .continue_)
+    }
+
+    /// Stop the current agent process (if still running) and spawn it again here.
+    private func restartSession(mode: SessionMode) {
         session?.kill()
-        let mode: SessionMode = sid.map { .resume(id: $0) } ?? .continue_
         let terminal = terminalView.getTerminal()
         session = makeSession(cols: terminal.cols, rows: terminal.rows, mode: mode,
                               agent: config.agent, model: config.agentModel)
@@ -1264,6 +1316,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
         sizePollTimer?.invalidate()
         clockify?.destroy()
         session?.kill()
+        // After an F5 relaunch the new window is already starting and owns
+        // orch.pid and the session status; removing or marking them "exited"
+        // here could land after it wrote them.
+        if handedOver { return }
         bus?.shutdown()
         try? FileManager.default.removeItem(atPath: config.orchDir + "/orch.pid")
     }
