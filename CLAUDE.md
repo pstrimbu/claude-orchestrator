@@ -44,7 +44,7 @@ orch --continue           # resume previous session
 ## Hotkeys
 
 - **F1** — Project panel
-- **F5** — Save scrollback, relaunch with `--continue`
+- **F5** or **Cmd+R** — Save scrollback, relaunch with `--continue` (on a Mac keyboard F5 needs Fn unless the top row is set to standard function keys)
 - **Ctrl+R** — Restart Claude session in-place
 - **Cmd+Q** — Quit
 
