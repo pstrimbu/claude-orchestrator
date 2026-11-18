@@ -47,6 +47,16 @@ enum AccountStore {
         var accounts: [Account]
     }
 
+    /// The Claude model a session moves to when its own model hits a per-model limit:
+    /// accounts.json → policy.model_fallback. Nil means the built-in default.
+    static var modelFallback: String? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: registryPath)),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let value = (obj["policy"] as? [String: Any])?["model_fallback"] as? String,
+              !value.isEmpty else { return nil }
+        return value
+    }
+
     static func load() -> Registry {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: registryPath)),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {

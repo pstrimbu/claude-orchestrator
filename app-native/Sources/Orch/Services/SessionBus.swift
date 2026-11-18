@@ -139,6 +139,18 @@ final class SessionBus {
     /// "You've hit your limit"; Codex: "You've hit your usage limit"), matched
     /// in the last few hundred letters of output so a model merely *discussing*
     /// limits earlier in a long reply doesn't trip it.
+    /// The name of the model whose OWN limit is on screen ("You've hit your Fable limit ·
+    /// resets …" → "fable"), or nil. This is a per-model cap: the account still works on
+    /// other models, so switching account does not help — switching model does. Matched on
+    /// the last few hundred letters only, like `showsLimitMessage`.
+    static func modelLimitShown(_ lettersTail: String) -> String? {
+        let tail = String(lettersTail.suffix(400))
+        guard let r = tail.range(of: "youvehityour[a-z]{3,20}limit", options: [.regularExpression, .backwards])
+        else { return nil }
+        let name = String(tail[r].dropFirst("youvehityour".count).dropLast("limit".count))
+        return ["usage", "weekly", "daily", "session", "hourly", "rate"].contains(name) ? nil : name
+    }
+
     static func showsLimitMessage(_ lettersTail: String) -> Bool {
         let tail = String(lettersTail.suffix(400))
         return ["usagelimitreached", "youvehityourlimit", "youvehityourusagelimit",

@@ -669,6 +669,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     private func pollUsage() {
         usageTicks += 1
         guard usageTicks % 15 == 0, let acct = account, session?.running == true else { return }
+        if acct.type == "claude", let limited = SessionBus.modelLimitShown(recentScreen) {
+            modelLimited(limited)
+            return
+        }
         let statusFile = ClaudeSession.statusFile(projectPath: projectPath)
         let codexHome = acct.codexHome, cwd = projectPath, since = sessionStartedAt
         let isClaude = acct.type == "claude"
@@ -694,6 +698,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             AccountStore.writeUsage(acct.id, u, source: cwd)
             DispatchQueue.main.async { self?.accountLimited(until) }
         }
+    }
+
+    /// A model's own limit (e.g. "You've hit your Fable limit") stops the session at a
+    /// dialog while the account can still use other models. Restart the same conversation
+    /// on the fallback model and nudge it on. The fallback is `model_fallback` in
+    /// ~/.config/orch/accounts.json's policy, else claude-opus-5-5. Once per launch, and
+    /// never when the fallback is itself the limited model (that would loop).
+    private var modelSwitchedThisLaunch = false
+    private func modelLimited(_ name: String) {
+        guard !modelSwitchedThisLaunch, config.agent == .claude else { return }
+        let fallback = AccountStore.modelFallback ?? "claude-opus-5-5"
+        guard !fallback.lowercased().contains(name) else {
+            Log.log("model \(name) limited and the fallback \(fallback) is the same model; leaving it")
+            return
+        }
+        modelSwitchedThisLaunch = true
+        Log.log("model \(name) hit its own limit; restarting on \(fallback)")
+        config.setAgent(.claude, model: fallback)   // persists agent_model in .orch/project.json
+        overlay.showMessage("\(name.capitalized) limit reached: switching to \(fallback)…")
+        recentScreen = ""
+        handleCtrlR()   // kill + respawn resuming the same session; makeSession reads the model
+        bus?.enqueue("Your previous model (\(name)) reached its own usage limit, so this session was " +
+                     "restarted on \(fallback) with the same conversation. Continue the task you were " +
+                     "working on from where you left off.")
     }
 
     private func accountLimited(_ until: Date?) {
