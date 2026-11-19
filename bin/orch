@@ -139,6 +139,14 @@ if [ -L "$BUNDLE_MACOS/orch" ] || [ ! "$BINARY" -ef "$BUNDLE_MACOS/orch" ]; then
   cp -f "$BINARY" "$BUNDLE_MACOS/orch"
 fi
 
+# One bundle id for every window. macOS keeps privacy grants (Desktop,
+# Documents, Downloads, camera, microphone…) per bundle id + signing identity,
+# so a per-project id (it was com.orch.<project>) made every project — and every
+# new worker worktree — ask for each folder again. With a shared id and the same
+# signing identity, one "Allow" covers all windows. The Dock name still comes
+# from CFBundleName, so windows stay told apart by project.
+ORCH_BUNDLE_ID="com.orch.session"
+
 # Write Info.plist with the project name as the display name
 cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -152,7 +160,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key>
   <string>$PROJECT_NAME</string>
   <key>CFBundleIdentifier</key>
-  <string>com.orch.$PROJECT_NAME</string>
+  <string>$ORCH_BUNDLE_ID</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSUIElement</key>

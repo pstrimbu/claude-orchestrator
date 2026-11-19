@@ -66,6 +66,17 @@ expect "no project path: current directory"   -- --continue              -- "$PR
 expect "no arguments at all"                  -- -- "$PROJ"
 expect "background flag after the project"    -- "$PROJ" --background    -- "$PROJ" --background
 
+# Every window shares one bundle id, so a privacy grant ("Allow" for Desktop,
+# camera…) made in one project covers all of them, worker worktrees included.
+mkdir -p "$T/proj2"; PROJ2="$(cd "$T/proj2" && pwd -P)"
+run_orch "$PROJ2"
+id1="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PROJ/.orch/proj.app/Contents/Info.plist" 2>&1)"
+id2="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PROJ2/.orch/proj2.app/Contents/Info.plist" 2>&1)"
+name2="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$PROJ2/.orch/proj2.app/Contents/Info.plist" 2>&1)"
+if [ "$id1" = "com.orch.session" ] && [ "$id2" = "$id1" ]; then ok "all projects share one bundle id"
+else bad "all projects share one bundle id" "proj: $id1" "proj2: $id2"; fi
+if [ "$name2" = "proj2" ]; then ok "Dock name is still the project"; else bad "Dock name is still the project" "got: $name2"; fi
+
 echo ""
 echo "=== Results: $pass passed, $fail failed ==="
 [ $fail -eq 0 ]
