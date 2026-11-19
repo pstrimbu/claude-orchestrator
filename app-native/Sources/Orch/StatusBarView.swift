@@ -24,6 +24,7 @@ struct StatusBarData {
     var costUSD = 0.0
     var burnUSDPerHour = 0.0
     var bgAgents = 0
+    var bgShells: [String] = []  // commands Claude is running in shells (BackgroundJobs)
     var gitAhead = 0
     var gitBehind = 0
     var diffAdded = 0
@@ -65,6 +66,7 @@ struct StatusBarView: View {
             separator
             sessionsChip
             if model.data.bgAgents > 0 { agentsChip }
+            if !model.data.bgShells.isEmpty { shellsChip }
             separator
             remoteChip
             Spacer(minLength: 8)
@@ -229,6 +231,29 @@ struct StatusBarView: View {
             .foregroundColor(Color(hex: 0x2563eb))
         }
         .help("\(model.data.bgAgents) background agent(s) running")
+    }
+
+    private var shellsChip: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "gearshape.2.fill")
+                .font(.system(size: 10))
+            Text("\(model.data.bgShells.count)")
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+        }
+        .foregroundColor(Color(hex: 0x7c3aed))
+        .padding(.horizontal, 6)
+        .help(shellsHelp)
+    }
+
+    private var shellsHelp: String {
+        let n = model.data.bgShells.count
+        let head = n == 1 ? "1 command running in the background:"
+                          : "\(n) commands running in the background:"
+        let lines = model.data.bgShells.map { cmd -> String in
+            let one = cmd.replacingOccurrences(of: "\n", with: " ")
+            return "\u{2022} " + (one.count > 120 ? String(one.prefix(117)) + "\u{2026}" : one)
+        }
+        return ([head] + lines).joined(separator: "\n")
     }
 
     private var newSessionChip: some View {

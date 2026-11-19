@@ -13,6 +13,7 @@ class StatusBarState {
     var costUSD: Double = 0
     var burnUSDPerHour: Double = 0
     var bgAgents: Int = 0
+    var bgShells: [String] = []
     var gitAhead: Int = 0
     var gitBehind: Int = 0
     var diffAdded: Int = 0

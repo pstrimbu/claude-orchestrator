@@ -997,6 +997,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
     // reports via its statusLine hook, then push into the status bar. Cheap:
     // re-parses only when Claude rewrites the file, which it does after each
     // assistant message and after `/compact` finishes.
+    /// Shell commands Claude is still running (background jobs, Monitor, or a
+    /// long foreground command). They print nothing to the terminal, so without
+    /// this the window looks idle while work is still going on.
+    private func pollBackgroundShells() {
+        let pid = session?.childPid ?? 0
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let cmds = BackgroundJobs.running(under: pid).map(\.command)
+            DispatchQueue.main.async {
+                guard let self = self, self.statusBarState.bgShells != cmds else { return }
+                self.statusBarState.bgShells = cmds
+                self.sendStatusUpdate()
+            }
+        }
+    }
+
     private func pollSessionSize() {
         // Only Claude Code writes the statusLine JSON these metrics come from.
         // For Codex/LM Studio, clear them so the size/cost chips don't show stale
@@ -1013,6 +1028,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             return
         }
         restoreLastCommandIfNeeded()
+        pollBackgroundShells()
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self, let m = self.sessionSize.read(projectPath: self.projectPath) else { return }
             DispatchQueue.main.async {
@@ -1099,6 +1115,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, TerminalViewDelegate {
             costUSD: statusBarState.costUSD,
             burnUSDPerHour: statusBarState.burnUSDPerHour,
             bgAgents: statusBarState.bgAgents,
+            bgShells: statusBarState.bgShells,
             gitAhead: statusBarState.gitAhead,
             gitBehind: statusBarState.gitBehind,
             diffAdded: statusBarState.diffAdded,
