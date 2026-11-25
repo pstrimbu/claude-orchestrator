@@ -17,7 +17,9 @@
 # --account ID runs it on that subscription account (orch-account list).
 # Every session is registered with the Loops portal (role, lead, agent,
 # account; project from the repo) — role defaults to lead for the name "lead",
-# worker otherwise, with --lead defaulting to <repo>-wt-lead.
+# worker otherwise, with --lead defaulting to <repo>-wt-lead. A registration
+# refused with 401/403 (identity or role) aborts before any window opens; any
+# other failure (409 session_closing during a Loops relaunch, API down) warns.
 #
 # Links: every path listed in <repo>/.loops/worker-links (or .orch/; one per line, relative
 # to the repo root) is symlinked from the main checkout into the worktree —
@@ -417,16 +419,32 @@ PY
 echo "worker $name: $wt ($branch, $agent${model:+/$model})"
 
 # Register with the Loops portal so its role and identity don't rest on a
-# folder name (SPEC §4.5). Non-fatal: orch works without the portal.
-loops_cli="$HOME/dev/loops/portal/bin/loops"
+# folder name (SPEC §4.5). Non-fatal, except an explicit refusal of the
+# caller's identity or role (HTTP 401/403): that aborts without opening a
+# window (Loops D-1222). Everything else warns and launches as before, in
+# particular 409 session_closing, which Loops' own relaunches (model limit,
+# watchdog, lead reopen) get by design before registering the session
+# themselves, and an unreachable API (the CLI queues the write and exits 0).
+# The CLI exits 1 for any refusal and prints "loops: <status>: <message>".
+loops_cli="${ORCH_LOOPS_CLI:-$HOME/dev/loops/portal/bin/loops}"
 if [ -x "$loops_cli" ]; then
   [ -n "$lead" ] || [ "$role" = lead ] || lead="$(basename "$repo")-wt-lead"
-  if ! LOOPS_ACTOR=orch-worker "$loops_cli" session register --name "$(basename "$wt")" --path "$wt" \
+  if reg_err="$(LOOPS_ACTOR=orch-worker "$loops_cli" session register --name "$(basename "$wt")" --path "$wt" \
        --repo "$repo" --role "$role" --agent "${agent/lmstudio/codex}" \
-       ${lead:+--lead "$lead"} ${account:+--account "$account"} >/dev/null; then
-    echo "warning: couldn't register $(basename "$wt") with the Loops portal (is the API up?)" >&2
+       ${lead:+--lead "$lead"} ${account:+--account "$account"} 2>&1 >/dev/null)"; then
+    if grep -q "API unreachable" <<<"$reg_err"; then
+      [ -z "$reg_err" ] || printf '%s\n' "$reg_err" >&2
+      echo "warning: Loops API unreachable; registration of $(basename "$wt") is queued in the loops outbox" >&2
+    else
+      echo "registered with loops as $role${lead:+ (lead $lead)}"
+    fi
   else
-    echo "registered with loops as $role${lead:+ (lead $lead)}"
+    [ -z "$reg_err" ] || printf '%s\n' "$reg_err" >&2
+    if grep -qE '^loops: (401|403):' <<<"$reg_err"; then
+      echo "error: the Loops portal refused $(basename "$wt")'s registration (identity/role); not launching" >&2
+      exit 1
+    fi
+    echo "warning: couldn't register $(basename "$wt") with the Loops portal; launching anyway" >&2
   fi
 fi
 if [ $launch = 1 ]; then

@@ -186,5 +186,53 @@ chmod 0755 "$T/nest"
 [ -f "$r-wt-w1/a" ] && git -C "$r-wt-w1" status >/dev/null 2>&1 && echo "$out" | grep -q "parent" \
   && ok "a read-only parent refuses before anything is deleted; tree still a working worktree" || bad "unexpected: $out"
 
+echo "Loops registration (D-1222): only 401/403 aborts; 409 session_closing, other errors and a down API launch"
+loops_cli="${LOOPS_CLI_UNDER_TEST:-/Users/peterstrimbu/dev/loops/portal/bin/loops}"
+if [ ! -x "$loops_cli" ]; then
+  echo "  SKIP: no loops CLI at $loops_cli"
+else
+  # The real CLI against a fake API: GETs succeed, POST /sessions/register gets the given status.
+  cat > "$T/fake_api.py" <<'PY'
+import http.server, json, sys
+code, err = int(sys.argv[2]), sys.argv[3]
+class H(http.server.BaseHTTPRequestHandler):
+    def reply(self, c, obj):
+        b = json.dumps(obj).encode()
+        self.send_response(c); self.send_header("content-type", "application/json"); self.end_headers(); self.wfile.write(b)
+    def do_GET(self): self.reply(200, [])
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("content-length", 0)))
+        self.reply(code, {"detail": {"error": err, "message": f"fake {err}"}})
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
+  # Stand-in for bin/orch: orch-worker execs "$(dirname "$0")/orch", so run a copy beside a fake.
+  mkdir -p "$T/regbin"; cp "$ORCH_WORKER" "$T/regbin/"
+  printf '#!/bin/sh\necho "LAUNCHED $*"\n' > "$T/regbin/orch"; chmod +x "$T/regbin/orch"
+  new_repo reg
+  port=18$((RANDOM % 800 + 100))
+  reg() {   # reg NAME STATUS ERROR -> $out, $rc
+    local p=$((port++))
+    python3 "$T/fake_api.py" "$p" "$2" "$3" & pids+=($!); local api=$!; sleep 0.5
+    rc=0; out="$(ORCH_LOOPS_CLI="$loops_cli" LOOPS_API="http://127.0.0.1:$p/api" LOOPS_DATA_DIR="$T/loops-data" \
+      "$T/regbin/orch-worker" "$T/reg" "$1" --agent codex 2>&1)" || rc=$?
+    { kill "$api"; wait "$api"; } 2>/dev/null || true
+  }
+  for s in 401 403; do
+    reg "r$s" "$s" forbidden
+    [ "$rc" -ne 0 ] && ! grep -q LAUNCHED <<<"$out" && grep -q "not launching" <<<"$out" \
+      && ok "$s aborts without a window" || bad "$s: rc=$rc $out"
+  done
+  reg r409 409 session_closing
+  [ "$rc" -eq 0 ] && grep -q LAUNCHED <<<"$out" && grep -q "409" <<<"$out" \
+    && ok "409 session_closing warns and launches" || bad "409: rc=$rc $out"
+  reg r422 422 invalid
+  [ "$rc" -eq 0 ] && grep -q LAUNCHED <<<"$out" && ok "another refusal (422) warns and launches" || bad "422: rc=$rc $out"
+  rc=0; out="$(ORCH_LOOPS_CLI="$loops_cli" LOOPS_API="http://127.0.0.1:1/api" LOOPS_DATA_DIR="$T/loops-data" \
+    "$T/regbin/orch-worker" "$T/reg" rdown --agent codex 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] && grep -q LAUNCHED <<<"$out" && grep -q "queued" <<<"$out" \
+    && ok "an unreachable API queues the registration and launches" || bad "API down: rc=$rc $out"
+fi
+
 echo; echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
